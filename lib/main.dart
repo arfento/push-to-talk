@@ -5,6 +5,7 @@ import 'package:push_to_talk_app/firebase_options.dart';
 import 'package:push_to_talk_app/push_to_talk_page.dart';
 import 'package:push_to_talk_app/push_to_talk_record.dart';
 import 'package:push_to_talk_app/utils/constants/constants.dart';
+import 'package:push_to_talk_app/views/audio_player_interaction.dart';
 import 'package:push_to_talk_app/views/auth/login_screen.dart';
 import 'package:push_to_talk_app/views/auth/register_screen.dart';
 import 'package:push_to_talk_app/views/home/walkie_talkie_screen.dart';
@@ -41,13 +42,14 @@ class MyApp extends StatelessWidget {
           primaryColor: kColourPrimary,
         ),
       ),
-      initialRoute: WelcomeScreen.id,
-      routes: {
-        WelcomeScreen.id: (context) => WelcomeScreen(),
-        RegisterScreen.id: (context) => RegisterScreen(),
-        LoginScreen.id: (context) => LoginScreen(),
-        WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
-      },
+      // initialRoute: WelcomeScreen.id,
+      // routes: {
+      //   WelcomeScreen.id: (context) => WelcomeScreen(),
+      //   RegisterScreen.id: (context) => RegisterScreen(),
+      //   LoginScreen.id: (context) => LoginScreen(),
+      //   WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
+      // },
+      home: AudioPlayerInteraction(),
     );
   }
 }

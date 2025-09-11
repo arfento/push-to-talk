@@ -79,6 +79,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/sounds/
     - assets/images/walkie.png
     - assets/dumble_cert.pem
     - assets/dumble_key.pem

@@ -20,7 +20,7 @@ class RecordingRow extends StatelessWidget {
     return GestureDetector(
       child: Container(
         color: currentlyPlayingFilename == filename
-            ? kColourPrimary
+            ? kColourIsRecording
             : kColourBackground,
         padding: EdgeInsets.all(16.0),
         child: Row(

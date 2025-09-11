@@ -85,13 +85,14 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: animationColour?.value ?? kColourBackground,
+      backgroundColor: kColourBackground,
       appBar: AppBar(title: Text(kAppTitle, style: kTextStyleAppTitle)),
       body: SafeArea(
         child: Padding(
           padding: kPaddingSafeArea,
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
               // Logo section with fixed height
               // Expanded(
