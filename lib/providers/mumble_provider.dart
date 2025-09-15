@@ -253,8 +253,8 @@ class MumbleProvider extends ChangeNotifier with NetworkLoggy {
         codec: Codec.pcm16,
         numChannels: channels,
         sampleRate: sampleRate,
-        interleaved: true,
-        bufferSize: 256,
+        interleaved: false,
+        bufferSize: 1024,
       );
       player.setVolume(1);
       voiceData
