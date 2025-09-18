@@ -8,6 +8,7 @@ import 'package:push_to_talk_app/views/udp/stream_voice.dart';
 import 'lobby_screen.dart';
 
 class UdpHomeScreen extends StatelessWidget {
+  static const String id = 'udp_home_screen';
   final NetworkService networkService = NetworkService();
 
   UdpHomeScreen({super.key});
@@ -111,17 +112,17 @@ class UdpHomeScreen extends StatelessWidget {
 
               const Spacer(),
 
-              _buildButton(
-                context,
-                icon: LucideIcons.radioTower,
-                label: 'Stream Example',
-                onTap: () async {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => StreamsExample()),
-                  );
-                },
-              ),
+              // _buildButton(
+              //   context,
+              //   icon: LucideIcons.radioTower,
+              //   label: 'Stream Example',
+              //   onTap: () async {
+              //     Navigator.push(
+              //       context,
+              //       MaterialPageRoute(builder: (context) => StreamsExample()),
+              //     );
+              //   },
+              // ),
 
               // // Bottom Tagline
               // Padding(

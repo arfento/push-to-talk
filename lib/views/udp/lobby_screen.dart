@@ -10,6 +10,7 @@ const int cstCHANNELNB = 2;
 const int cstBITRATE = 16000;
 
 class LobbyScreen extends StatefulWidget {
+  static const String id = 'lobby_screen';
   final bool isHost;
   final String hostIp; // Host's IP
 
