@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:push_to_talk_app/services/network_service.dart';
+import 'package:push_to_talk_app/views/udp/stream_voice.dart';
 
 import 'lobby_screen.dart';
 
@@ -41,15 +42,15 @@ class UdpHomeScreen extends StatelessWidget {
               const SizedBox(height: 16),
 
               // Title
-              Text(
-                'Jabberry',
-                style: TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  letterSpacing: 1.5,
-                ),
-              ),
+              // Text(
+              //   'Jabberry',
+              //   style: TextStyle(
+              //     fontSize: 36,
+              //     fontWeight: FontWeight.bold,
+              //     color: Colors.white,
+              //     letterSpacing: 1.5,
+              //   ),
+              // ),
               const SizedBox(height: 8),
 
               // Subtitle
@@ -110,14 +111,26 @@ class UdpHomeScreen extends StatelessWidget {
 
               const Spacer(),
 
-              // Bottom Tagline
-              Padding(
-                padding: const EdgeInsets.only(bottom: 20),
-                child: Text(
-                  'Stay in sync with your crew 😎',
-                  style: TextStyle(fontSize: 16, color: Colors.white70),
-                ),
+              _buildButton(
+                context,
+                icon: LucideIcons.radioTower,
+                label: 'Stream Example',
+                onTap: () async {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => StreamsExample()),
+                  );
+                },
               ),
+
+              // // Bottom Tagline
+              // Padding(
+              //   padding: const EdgeInsets.only(bottom: 20),
+              //   child: Text(
+              //     'Stay in sync with your crew 😎',
+              //     style: TextStyle(fontSize: 16, color: Colors.white70),
+              //   ),
+              // ),
             ],
           ),
         ),

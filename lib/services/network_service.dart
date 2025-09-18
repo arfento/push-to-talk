@@ -130,8 +130,10 @@ class NetworkService {
   Future<String?> getBroadcastAddress() async {
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
-        if (addr.type == InternetAddressType.IPv4 &&
-            addr.address.startsWith("192.168.")) {
+        if (addr.type == InternetAddressType.IPv4
+        // &&
+        //     addr.address.startsWith("192.168.")
+        ) {
           // Ensure it's a WiFi IP
           print(
             "🔍 Found WiFi IP: ${addr.address} on interface: ${interface.name}",
@@ -152,8 +154,10 @@ class NetworkService {
   Future<String?> getLocalIp() async {
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
-        if (addr.type == InternetAddressType.IPv4 &&
-            addr.address.startsWith("192.168.")) {
+        if (addr.type == InternetAddressType.IPv4
+        // &&
+        //     addr.address.startsWith("192.168.")
+        ) {
           // Ensure it's a WiFi IP
           return addr.address;
         }

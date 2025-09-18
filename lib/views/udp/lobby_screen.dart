@@ -5,6 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:udp/udp.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 
+const int cstSAMPLERATE = 8000;
+const int cstCHANNELNB = 2;
+const int cstBITRATE = 16000;
+
 class LobbyScreen extends StatefulWidget {
   final bool isHost;
   final String hostIp; // Host's IP
@@ -28,6 +32,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
   StreamController<Uint8List>? _audioStreamController; // Added for streaming
   Timer? _silenceTimer; // To detect end of stream on receiver
   bool _isPlayerReady = false; // Track if player is ready for streaming
+  StreamController<Uint8List>? recordingDataController;
+  IOSink? sink;
 
   @override
   void initState() {
@@ -53,8 +59,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
     print("MY IP ADDRESS $_myIpAddress");
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
-        if (addr.type == InternetAddressType.IPv4 &&
-            addr.address.startsWith("192.168.")) {
+        if (addr.type == InternetAddressType.IPv4
+        // &&
+        //     addr.address.startsWith("192.168.")
+        ) {
           setState(() {
             _myIpAddress = addr.address;
           });
@@ -74,15 +82,36 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
   Future<void> _startPlayerForStream() async {
     if (!_isPlayerReady) {
+      // if (_audioPlayer!.isStopped) {
+      // await _audioPlayer!.startPlayerFromStream(
+      //   codec: Codec.pcm16, //_codec,
+      //   numChannels: cstCHANNELNB,
+      //   sampleRate: cstSAMPLERATE, // tSTREAMSAMPLERATE, //tSAMPLERATE,
+      //   interleaved: true,
+      //   bufferSize: 1024,
+      // );
       await _audioPlayer!.startPlayerFromStream(
         codec: Codec.pcm16,
-        numChannels: 1,
-        sampleRate: 16000,
-        interleaved: false,
+        numChannels: 2,
+        sampleRate: 48000,
+        interleaved: true,
         bufferSize: 1024,
       );
+
+      // await _audioPlayer!.startPlayerFromStream(
+      //   codec: Codec.pcm16,
+      //   numChannels: 2,
+      //   sampleRate: 44100,
+      //   // sampleRate: Platform.isIOS ? 44100 : 16000,
+      //   interleaved: false,
+      //   bufferSize: 2048,
+      //   // bufferSize:
+      //   //     // 8192,
+      //   //     1024,
+      // );
       _isPlayerReady = true;
       print("🎵 [CLIENT] Player initialized for streaming");
+      // }
     }
   }
 
@@ -105,8 +134,12 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
     await _audioRecorder!.startRecorder(
       codec: Codec.pcm16,
-      numChannels: 1,
-      sampleRate: 16000,
+      numChannels: 2,
+      sampleRate: 48000,
+      // sampleRate: Platform.isIOS ? 44100 : 16000,
+      bitRate: 16000,
+      // bufferSize: 1024, // 8192
+      bufferSize: 1024,
       toStream: _audioStreamController!.sink,
     );
   }
@@ -131,11 +164,34 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
 
     _audioStreamController = null;
+    print("🛑 [CLIENT] Stopped streaming");
   }
 
   void _sendStreamedAudio(Uint8List audioChunk) async {
     if (audioChunk.isEmpty) return;
+    List<Uint8List> bufferUint8 = [];
+    bufferUint8.add(audioChunk);
 
+    // ✅ ensure frame size aligned (16-bit PCM = 2 bytes/sample)
+    if (audioChunk.length % 2 != 0) {
+      print("⚠️ Skipping misaligned audio chunk size: ${audioChunk.length}");
+      return;
+    }
+
+    print("📤 Sending audio chunk size: ${audioChunk.length}");
+
+    // for (var audio in bufferUint8) {
+    //   for (String ip in connectedUsers) {
+    //     if (ip != _myIpAddress) {
+    //       UDP sender = await UDP.bind(Endpoint.any());
+    //       await sender.send(
+    //         audio,
+    //         Endpoint.unicast(InternetAddress(ip), port: Port(6006)),
+    //       );
+    //       sender.close();
+    //     }
+    //   }
+    // }
     for (String ip in connectedUsers) {
       if (ip != _myIpAddress) {
         UDP sender = await UDP.bind(Endpoint.any());
@@ -156,6 +212,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
       if (datagram != null && datagram.data.isNotEmpty) {
         Uint8List audioData = datagram.data;
 
+        // // ✅ Stop signal
+        // if (audioData.length == 4 && audioData.every((b) => b == 0xFF)) {
+        //   await _stopPlayerForStream();
+        //   _silenceTimer?.cancel();
+        //   print("🛑 [CLIENT] Received stop signal");
+        //   return;
+        // }
+
         // Check for stop signal
         if (audioData.length == 4 &&
             audioData[0] == 0xFF &&
@@ -174,14 +238,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
         _silenceTimer?.cancel();
         _silenceTimer = Timer(Duration(milliseconds: 100), () async {
           await _stopPlayerForStream();
-          print(
-            "🔇 [CLIENT] No audio data received for 500ms, stopping player...",
-          );
+          print("🔇 [CLIENT] No audio for 500ms, stopping player...");
         });
 
         // Feed audio data
         try {
-          await _audioPlayer!.feedFromStream(audioData);
+          print("📥 Received audio chunk size: ${audioData.length}");
+          await _audioPlayer!.feedUint8FromStream(audioData);
         } catch (e) {
           print("⚠️ [CLIENT] Error feeding audio stream: $e");
         }
