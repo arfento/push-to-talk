@@ -10,6 +10,7 @@ import 'package:push_to_talk_app/views/auth/login_screen.dart';
 import 'package:push_to_talk_app/views/auth/register_screen.dart';
 import 'package:push_to_talk_app/views/home/walkie_talkie_screen.dart';
 import 'package:push_to_talk_app/views/speech_and_record_play.dart';
+import 'package:push_to_talk_app/views/vc_webrtc/my_home_page.dart';
 import 'package:push_to_talk_app/views/video_stream/video_home_page.dart';
 import 'package:push_to_talk_app/views/welcome_screen.dart';
 
@@ -50,7 +51,8 @@ class MyApp extends StatelessWidget {
       //   LoginScreen.id: (context) => LoginScreen(),
       //   WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
       // },
-      home: VideoHomePage(),
+      // home: VideoHomePage(),
+      home: const MyHomePage(),
     );
   }
 }
