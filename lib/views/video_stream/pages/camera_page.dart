@@ -11,6 +11,7 @@ import 'package:push_to_talk_app/utils/enums/camera_enums.dart';
 import 'package:push_to_talk_app/utils/screenshot_utils.dart';
 import 'package:push_to_talk_app/views/video_stream/pages/video_player.dart';
 import 'package:push_to_talk_app/views/video_stream/widgets/animated_bar.dart';
+import 'package:push_to_talk_app/views/video_stream/widgets/video_dialog.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
 class CameraPage extends StatefulWidget {
@@ -62,16 +63,22 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color.fromARGB(255, 54, 53, 53),
-      extendBodyBehindAppBar: true,
-      resizeToAvoidBottomInset: false,
-      body: VisibilityDetector(
-        key: const Key("my_camera"),
-        onVisibilityChanged: _handleVisibilityChanged,
-        child: BlocConsumer<CameraBloc, CameraState>(
-          listener: _cameraBlocListener,
-          builder: _cameraBlocBuilder,
+    return SafeArea(
+      bottom: true,
+      top: true,
+      left: true,
+      right: true,
+      child: Scaffold(
+        backgroundColor: const Color.fromARGB(255, 54, 53, 53),
+        extendBodyBehindAppBar: true,
+        resizeToAvoidBottomInset: false,
+        body: VisibilityDetector(
+          key: const Key("my_camera"),
+          onVisibilityChanged: _handleVisibilityChanged,
+          child: BlocConsumer<CameraBloc, CameraState>(
+            listener: _cameraBlocListener,
+            builder: _cameraBlocBuilder,
+          ),
         ),
       ),
     );
@@ -79,9 +86,14 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   void _cameraBlocListener(BuildContext context, CameraState state) {
     if (state is CameraRecordingSuccess) {
-      // Navigate to the VideoPage when video recording is successful
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => VideoPage(videoFile: state.file)),
+      // // Navigate to the VideoPage when video recording is successful
+      // Navigator.of(context).push(
+      //   MaterialPageRoute(builder: (_) => VideoPage(videoFile: state.file)),
+      // );
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => VideoDialog(videoFile: state.file),
       );
     } else if (state is CameraReady && state.hasRecordingError) {
       // Show a snackbar when there is a recording error (less than 2 seconds)

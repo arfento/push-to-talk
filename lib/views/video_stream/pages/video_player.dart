@@ -33,24 +33,30 @@ class _VideoPageState extends State<VideoPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Video 😍"), centerTitle: true),
-      body: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Transform.scale(
-            scale: 1.1,
-            child: Flexible(
-              child: AspectRatio(
-                aspectRatio: 9 / 16,
-                child: Container(
-                  color: Colors.black,
-                  child: VideoPlayer(_videoController),
+    return SafeArea(
+      bottom: true,
+      top: true,
+      left: true,
+      right: true,
+      child: Scaffold(
+        appBar: AppBar(title: const Text("Video 😍"), centerTitle: true),
+        body: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Transform.scale(
+              scale: 1.1,
+              child: Flexible(
+                child: AspectRatio(
+                  aspectRatio: 9 / 16,
+                  child: Container(
+                    color: Colors.black,
+                    child: VideoPlayer(_videoController),
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
