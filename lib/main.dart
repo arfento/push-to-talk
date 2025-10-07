@@ -13,6 +13,7 @@ import 'package:push_to_talk_app/views/ptt_screen.dart';
 import 'package:push_to_talk_app/views/speech_and_record_play.dart';
 import 'package:push_to_talk_app/views/udp/lobby_screen.dart';
 import 'package:push_to_talk_app/views/udp/udp_home_screen.dart';
+import 'package:push_to_talk_app/views/video_stream/video_home_page.dart';
 import 'package:push_to_talk_app/views/welcome_screen.dart';
 
 void main() async {
@@ -53,6 +54,7 @@ class MyApp extends StatelessWidget {
         LoginScreen.id: (context) => LoginScreen(),
         WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
         UdpHomeScreen.id: (context) => UdpHomeScreen(),
+        VideoHomePage.id: (context) => VideoHomePage(),
         // LobbyScreen.id: (context) => LobbyScreen(isHost: null,, hostIp: '',),
       },
       onGenerateRoute: (settings) {
@@ -70,6 +72,14 @@ class MyApp extends StatelessWidget {
         return null;
       },
       // home: UdpHomeScreen(),
+      // initialRoute: WelcomeScreen.id,
+      // routes: {
+      //   WelcomeScreen.id: (context) => WelcomeScreen(),
+      //   RegisterScreen.id: (context) => RegisterScreen(),
+      //   LoginScreen.id: (context) => LoginScreen(),
+      //   WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
+      // },
+      // home: VideoHomePage(),
     );
   }
 }
