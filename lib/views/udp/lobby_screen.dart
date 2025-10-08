@@ -5,6 +5,9 @@ import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:push_to_talk_app/views/udp/file_transfer.dart';
+import 'package:push_to_talk_app/views/video_stream/widgets/video_dialog.dart';
+import 'package:push_to_talk_app/views/video_stream/widgets/video_path_dialog.dart';
 import 'package:udp/udp.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 
@@ -78,10 +81,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     print("MY IP ADDRESS $_myIpAddress");
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
-        if (addr.type == InternetAddressType.IPv4
-        // &&
-        //     addr.address.startsWith("192.168.")
-        ) {
+        if (addr.type == InternetAddressType.IPv4 &&
+            addr.address.startsWith("172.16.")) {
           setState(() {
             _myIpAddress = addr.address;
           });
@@ -220,10 +221,17 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   Future<void> _sendVideoFile(XFile videoFile) async {
     try {
       Uint8List videoData = await videoFile.readAsBytes();
+      log(
+        '_listenForVideoStream 📤 Sending video file: ${videoData.length} bytes',
+      );
 
-      // Split large file into chunks
-      const int CHUNK_SIZE = 1024 * 64; // 64KB chunks
+      // Use much smaller chunks for UDP reliability
+      const int CHUNK_SIZE = 1024; // 1KB chunks - much safer for UDP
       int totalChunks = (videoData.length / CHUNK_SIZE).ceil();
+
+      log(
+        '_listenForVideoStream 📦 Dividing into $totalChunks chunks of $CHUNK_SIZE bytes',
+      );
 
       for (int i = 0; i < totalChunks; i++) {
         int start = i * CHUNK_SIZE;
@@ -235,32 +243,57 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         // Add header with chunk information
         Uint8List header = Uint8List(12);
         ByteData headerData = ByteData.view(header.buffer);
-        headerData.setUint32(0, videoData.length); // Total file size
-        headerData.setUint32(4, i); // Chunk index
-        headerData.setUint32(8, totalChunks); // Total chunks
+        headerData.setUint32(0, videoData.length);
+        headerData.setUint32(4, i);
+        headerData.setUint32(8, totalChunks);
 
         Uint8List packet = Uint8List.fromList([...header, ...chunk]);
 
-        for (String ip in connectedUsers) {
-          if (ip != _myIpAddress) {
-            UDP sender = await UDP.bind(Endpoint.any());
-            await sender.send(
-              packet,
-              Endpoint.unicast(InternetAddress(ip), port: Port(VIDEO_PORT)),
+        log(
+          '_listenForVideoStream 📤 Sending chunk $i/$totalChunks (${packet.length} bytes)',
+        );
+
+        // Add retry mechanism for each chunk
+        bool sentSuccessfully = false;
+        for (int attempt = 0; attempt < 3 && !sentSuccessfully; attempt++) {
+          try {
+            for (String ip in connectedUsers) {
+              if (ip != _myIpAddress) {
+                UDP sender = await UDP.bind(Endpoint.any());
+                await sender.send(
+                  packet,
+                  Endpoint.unicast(InternetAddress(ip), port: Port(VIDEO_PORT)),
+                );
+                sender.close();
+              }
+            }
+            sentSuccessfully = true;
+            log('_listenForVideoStream ✅ Chunk $i sent successfully');
+          } catch (e) {
+            log(
+              '_listenForVideoStream ❌ Failed to send chunk $i, attempt ${attempt + 1}/3: $e',
             );
-            sender.close();
+            if (attempt < 2) {
+              await Future.delayed(Duration(milliseconds: 100));
+            }
           }
         }
 
-        // Small delay to prevent overwhelming the network
-        await Future.delayed(Duration(milliseconds: 10));
+        if (!sentSuccessfully) {
+          log(
+            '_listenForVideoStream 💥 Failed to send chunk $i after 3 attempts',
+          );
+        }
+
+        // Increase delay to prevent network congestion
+        await Future.delayed(Duration(milliseconds: 50));
       }
 
       log(
-        '_listenForVideoStream Video file sent successfully: ${videoFile.path}',
+        '_listenForVideoStream ✅ Video file sent successfully: ${videoFile.path}',
       );
     } catch (e) {
-      log('_listenForVideoStream Error sending video file: $e');
+      log('_listenForVideoStream ❌ Error sending video file: $e');
     }
   }
 
@@ -270,72 +303,152 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       "_listenForVideoStream 🎥 [CLIENT] Listening for video stream on port $VIDEO_PORT...",
     );
 
-    Map<String, List<Uint8List>> videoBuffers = {};
-    Map<String, int> expectedChunks = {};
+    Map<String, FileTransfer> fileTransfers = {};
 
     receiver.asStream().listen((datagram) async {
       if (datagram != null && datagram.data.isNotEmpty) {
         String senderIp = datagram.address.address;
         Uint8List data = datagram.data;
 
+        log(
+          '_listenForVideoStream 📹 Received data from $senderIp: ${data.length} bytes',
+        );
+
         try {
-          // Check if this is a chunked file (has header)
           if (data.length >= 12) {
             ByteData headerData = ByteData.view(data.buffer);
             int totalSize = headerData.getUint32(0);
             int chunkIndex = headerData.getUint32(4);
             int totalChunks = headerData.getUint32(8);
-
-            // Initialize buffer if needed
-            if (!videoBuffers.containsKey(senderIp)) {
-              videoBuffers[senderIp] = List.filled(totalChunks, Uint8List(0));
-              expectedChunks[senderIp] = totalChunks;
-            }
-
-            // Store chunk
             Uint8List videoChunk = data.sublist(12);
-            videoBuffers[senderIp]![chunkIndex] = videoChunk;
 
-            // Check if we have all chunks
-            bool hasAllChunks = videoBuffers[senderIp]!.every(
-              (chunk) => chunk.isNotEmpty,
+            log(
+              '_listenForVideoStream 📦 Chunk $chunkIndex/$totalChunks from $senderIp (${videoChunk.length} bytes)',
             );
 
-            if (hasAllChunks) {
-              // Reconstruct file
-              Uint8List completeFile = Uint8List(totalSize);
-              int position = 0;
+            // Initialize or get existing transfer
+            if (!fileTransfers.containsKey(senderIp)) {
+              log(
+                '_listenForVideoStream 🆕 Starting new file transfer from $senderIp: $totalChunks chunks, $totalSize bytes',
+              );
+              fileTransfers[senderIp] = FileTransfer(
+                totalSize: totalSize,
+                totalChunks: totalChunks,
+                chunks: List<Uint8List?>.filled(totalChunks, null),
+                receivedChunks: 0,
+                lastChunkTime: DateTime.now(),
+                timer: Timer(Duration(seconds: 30), () {
+                  // Increased timeout
+                  log(
+                    '_listenForVideoStream ⏰ Timeout for transfer from $senderIp - only received ${fileTransfers[senderIp]?.receivedChunks}/$totalChunks chunks',
+                  );
+                  fileTransfers.remove(senderIp);
+                }),
+              );
+            }
 
-              for (var chunk in videoBuffers[senderIp]!) {
-                completeFile.setRange(position, position + chunk.length, chunk);
-                position += chunk.length;
+            FileTransfer transfer = fileTransfers[senderIp]!;
+
+            // Reset timer on each received chunk
+            transfer.timer.cancel();
+            transfer.timer = Timer(Duration(seconds: 30), () {
+              log(
+                '_listenForVideoStream ⏰ Timeout for transfer from $senderIp - received ${transfer.receivedChunks}/${transfer.totalChunks} chunks',
+              );
+              fileTransfers.remove(senderIp);
+            });
+
+            // Update chunk if not already received
+            if (transfer.chunks[chunkIndex] == null) {
+              transfer.chunks[chunkIndex] = videoChunk;
+              transfer.receivedChunks++;
+              transfer.lastChunkTime = DateTime.now();
+
+              log(
+                '_listenForVideoStream ✅ Stored chunk $chunkIndex - Progress: ${transfer.receivedChunks}/${transfer.totalChunks}',
+              );
+            } else {
+              log(
+                '_listenForVideoStream 📨 Duplicate chunk $chunkIndex received',
+              );
+            }
+
+            // Check if we have all chunks
+            if (transfer.receivedChunks == transfer.totalChunks) {
+              log(
+                '_listenForVideoStream 🎉 All chunks received from $senderIp, reassembling file...',
+              );
+
+              // Reconstruct file
+              Uint8List completeFile = Uint8List(transfer.totalSize);
+              int position = 0;
+              int actualChunks = 0;
+
+              for (var chunk in transfer.chunks) {
+                if (chunk != null) {
+                  completeFile.setRange(
+                    position,
+                    position + chunk.length,
+                    chunk,
+                  );
+                  position += chunk.length;
+                  actualChunks++;
+                }
               }
+
+              log(
+                '_listenForVideoStream 🔧 Reassembled file: $position bytes from $actualChunks chunks',
+              );
+
+              // Cancel timeout timer
+              transfer.timer.cancel();
 
               // Save and display video
               await _saveAndDisplayVideo(completeFile, senderIp);
 
               // Clean up
-              videoBuffers.remove(senderIp);
-              expectedChunks.remove(senderIp);
+              fileTransfers.remove(senderIp);
+
+              log(
+                '_listenForVideoStream 🎊 Video file successfully processed from $senderIp',
+              );
+            } else {
+              double progress =
+                  (transfer.receivedChunks / transfer.totalChunks) * 100;
+              log(
+                '_listenForVideoStream 📊 Progress: ${transfer.receivedChunks}/${transfer.totalChunks} chunks (${progress.toStringAsFixed(1)}%) from $senderIp',
+              );
             }
           } else {
-            // This is a video frame (real-time streaming)
-            // You can implement real-time video display here
             log(
-              "_listenForVideoStream 📹 Received video frame from $senderIp: ${data.length} bytes",
+              "_listenForVideoStream 📹 Real-time video frame from $senderIp: ${data.length} bytes",
             );
           }
         } catch (e) {
-          log('_listenForVideoStream Error processing video data: $e');
+          log(
+            '_listenForVideoStream ❌ Error processing video data from $senderIp: $e',
+          );
         }
       }
     });
+  }
+
+  // Optional: Method for real-time frame display
+  void _displayRealTimeVideoFrame(Uint8List frameData, String senderIp) {
+    // You can implement real-time video display here
+    // This would require a different approach - possibly using a image widget
+    // and converting the frame data to an image
+    log(
+      '_listenForVideoStream 🎬 Real-time frame from $senderIp: ${frameData.length} bytes',
+    );
   }
 
   Future<void> _saveAndDisplayVideo(
     Uint8List videoData,
     String senderIp,
   ) async {
+    log('_listenForVideoStream _saveAndDisplayVideo $senderIp');
+
     try {
       String tempPath =
           '${Directory.systemTemp.path}/received_video_${DateTime.now().millisecondsSinceEpoch}.mp4';
@@ -350,7 +463,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             content: Text('Video saved to: $tempPath'),
             actions: [
               TextButton(
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) => VideoPathDialog(videoPath: tempPath),
+                  );
+                },
                 child: Text('OK'),
               ),
             ],
@@ -1074,6 +1194,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                         ),
                       ),
                       SizedBox(width: 16),
+
                       // Push-to-Talk Button
                       IconButton(
                         onPressed: _isStreaming
