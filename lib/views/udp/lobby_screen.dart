@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:udp/udp.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 
@@ -13,14 +16,19 @@ class LobbyScreen extends StatefulWidget {
   static const String id = 'lobby_screen';
   final bool isHost;
   final String hostIp; // Host's IP
+  final List<CameraDescription> cameras;
 
-  const LobbyScreen({required this.isHost, required this.hostIp});
+  const LobbyScreen({
+    required this.isHost,
+    required this.hostIp,
+    required this.cameras,
+  });
 
   @override
   _LobbyScreenState createState() => _LobbyScreenState();
 }
 
-class _LobbyScreenState extends State<LobbyScreen> {
+class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   // final VoiceService voiceService = VoiceService();
   List<String> connectedUsers = []; // Stores connected IPs
   UDP? udpSocket;
@@ -33,8 +41,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
   StreamController<Uint8List>? _audioStreamController; // Added for streaming
   Timer? _silenceTimer; // To detect end of stream on receiver
   bool _isPlayerReady = false; // Track if player is ready for streaming
-  StreamController<Uint8List>? recordingDataController;
-  IOSink? sink;
+
+  // Camera variables
+  CameraController? _cameraController;
+  bool _isRecordingVideo = false;
+  bool _isCameraInitialized = false;
+  Timer? _videoChunkTimer;
+  List<Uint8List> _videoBuffer = [];
+  static const int VIDEO_PORT = 6007;
 
   @override
   void initState() {
@@ -45,6 +59,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
     _initAudio();
+
+    _initCamera();
+
     if (widget.isHost) {
       _startReceivingRequests();
     } else {
@@ -54,6 +71,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
     _listenForMessages();
     _listenForAudio();
     _listenForStreamedAudio(); // New listener for real-time audio
+    _listenForVideoStream(); // New listener for video
   }
 
   Future<String?> getLocalIp() async {
@@ -79,6 +97,271 @@ class _LobbyScreenState extends State<LobbyScreen> {
     await _audioRecorder!.openRecorder();
     await _audioPlayer!.openPlayer();
     await _startPlayerForStream(); // Initial setup
+  }
+
+  Future<void> _initCamera() async {
+    try {
+      // Request camera permission
+      var status = await Permission.camera.request();
+      if (status != PermissionStatus.granted) {
+        log('_listenForVideoStream Camera permission denied');
+        return;
+      }
+
+      if (widget.cameras.isEmpty) {
+        log('_listenForVideoStream No cameras available');
+        return;
+      }
+
+      // Initialize camera controller
+      _cameraController = CameraController(
+        widget.cameras.first,
+        ResolutionPreset.medium,
+        enableAudio: true,
+      );
+
+      await _cameraController!.initialize();
+
+      setState(() {
+        _isCameraInitialized = true;
+      });
+
+      log('_listenForVideoStream Camera initialized successfully');
+    } catch (e) {
+      log('_listenForVideoStream Error initializing camera: $e');
+    }
+  }
+
+  void _startVideoRecording() async {
+    if (!_isCameraInitialized || _isRecordingVideo) return;
+
+    try {
+      setState(() {
+        _isRecordingVideo = true;
+      });
+
+      // Start video recording
+      await _cameraController!.startVideoRecording();
+
+      // Start sending video chunks periodically
+      _videoChunkTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+        _captureAndSendVideoFrame();
+      });
+
+      log('_listenForVideoStream Started video recording and streaming');
+    } catch (e) {
+      log('_listenForVideoStream Error starting video recording: $e');
+      setState(() {
+        _isRecordingVideo = false;
+      });
+    }
+  }
+
+  void _stopVideoRecording() async {
+    if (!_isRecordingVideo) return;
+
+    try {
+      _videoChunkTimer?.cancel();
+      _videoChunkTimer = null;
+
+      // Stop video recording
+      final file = await _cameraController!.stopVideoRecording();
+
+      log("_listenForVideoStream _stopVideoRecording $file");
+
+      setState(() {
+        _isRecordingVideo = false;
+      });
+
+      // Send the complete video file
+      await _sendVideoFile(file);
+
+      log('_listenForVideoStream Stopped video recording');
+    } catch (e) {
+      log('_listenForVideoStream Error stopping video recording: $e');
+    }
+  }
+
+  Future<void> _captureAndSendVideoFrame() async {
+    try {
+      if (_cameraController!.value.isStreamingImages && _isRecordingVideo) {
+        // Capture a frame (you might need to use a different approach based on your camera package)
+        // This is a simplified example - you might need to implement frame capture differently
+        XFile? imageFile = await _cameraController!.takePicture();
+        if (imageFile != null) {
+          Uint8List imageData = await imageFile.readAsBytes();
+          _sendVideoChunk(imageData);
+        }
+      }
+    } catch (e) {
+      log('_listenForVideoStream Error capturing video frame: $e');
+    }
+  }
+
+  Future<void> _sendVideoChunk(Uint8List videoData) async {
+    if (videoData.isEmpty || connectedUsers.isEmpty) return;
+
+    try {
+      for (String ip in connectedUsers) {
+        if (ip != _myIpAddress) {
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            videoData,
+            Endpoint.unicast(InternetAddress(ip), port: Port(VIDEO_PORT)),
+          );
+          sender.close();
+        }
+      }
+    } catch (e) {
+      log('_listenForVideoStream Error sending video chunk: $e');
+    }
+  }
+
+  Future<void> _sendVideoFile(XFile videoFile) async {
+    try {
+      Uint8List videoData = await videoFile.readAsBytes();
+
+      // Split large file into chunks
+      const int CHUNK_SIZE = 1024 * 64; // 64KB chunks
+      int totalChunks = (videoData.length / CHUNK_SIZE).ceil();
+
+      for (int i = 0; i < totalChunks; i++) {
+        int start = i * CHUNK_SIZE;
+        int end = (i + 1) * CHUNK_SIZE;
+        if (end > videoData.length) end = videoData.length;
+
+        Uint8List chunk = videoData.sublist(start, end);
+
+        // Add header with chunk information
+        Uint8List header = Uint8List(12);
+        ByteData headerData = ByteData.view(header.buffer);
+        headerData.setUint32(0, videoData.length); // Total file size
+        headerData.setUint32(4, i); // Chunk index
+        headerData.setUint32(8, totalChunks); // Total chunks
+
+        Uint8List packet = Uint8List.fromList([...header, ...chunk]);
+
+        for (String ip in connectedUsers) {
+          if (ip != _myIpAddress) {
+            UDP sender = await UDP.bind(Endpoint.any());
+            await sender.send(
+              packet,
+              Endpoint.unicast(InternetAddress(ip), port: Port(VIDEO_PORT)),
+            );
+            sender.close();
+          }
+        }
+
+        // Small delay to prevent overwhelming the network
+        await Future.delayed(Duration(milliseconds: 10));
+      }
+
+      log(
+        '_listenForVideoStream Video file sent successfully: ${videoFile.path}',
+      );
+    } catch (e) {
+      log('_listenForVideoStream Error sending video file: $e');
+    }
+  }
+
+  void _listenForVideoStream() async {
+    UDP receiver = await UDP.bind(Endpoint.any(port: Port(VIDEO_PORT)));
+    log(
+      "_listenForVideoStream 🎥 [CLIENT] Listening for video stream on port $VIDEO_PORT...",
+    );
+
+    Map<String, List<Uint8List>> videoBuffers = {};
+    Map<String, int> expectedChunks = {};
+
+    receiver.asStream().listen((datagram) async {
+      if (datagram != null && datagram.data.isNotEmpty) {
+        String senderIp = datagram.address.address;
+        Uint8List data = datagram.data;
+
+        try {
+          // Check if this is a chunked file (has header)
+          if (data.length >= 12) {
+            ByteData headerData = ByteData.view(data.buffer);
+            int totalSize = headerData.getUint32(0);
+            int chunkIndex = headerData.getUint32(4);
+            int totalChunks = headerData.getUint32(8);
+
+            // Initialize buffer if needed
+            if (!videoBuffers.containsKey(senderIp)) {
+              videoBuffers[senderIp] = List.filled(totalChunks, Uint8List(0));
+              expectedChunks[senderIp] = totalChunks;
+            }
+
+            // Store chunk
+            Uint8List videoChunk = data.sublist(12);
+            videoBuffers[senderIp]![chunkIndex] = videoChunk;
+
+            // Check if we have all chunks
+            bool hasAllChunks = videoBuffers[senderIp]!.every(
+              (chunk) => chunk.isNotEmpty,
+            );
+
+            if (hasAllChunks) {
+              // Reconstruct file
+              Uint8List completeFile = Uint8List(totalSize);
+              int position = 0;
+
+              for (var chunk in videoBuffers[senderIp]!) {
+                completeFile.setRange(position, position + chunk.length, chunk);
+                position += chunk.length;
+              }
+
+              // Save and display video
+              await _saveAndDisplayVideo(completeFile, senderIp);
+
+              // Clean up
+              videoBuffers.remove(senderIp);
+              expectedChunks.remove(senderIp);
+            }
+          } else {
+            // This is a video frame (real-time streaming)
+            // You can implement real-time video display here
+            log(
+              "_listenForVideoStream 📹 Received video frame from $senderIp: ${data.length} bytes",
+            );
+          }
+        } catch (e) {
+          log('_listenForVideoStream Error processing video data: $e');
+        }
+      }
+    });
+  }
+
+  Future<void> _saveAndDisplayVideo(
+    Uint8List videoData,
+    String senderIp,
+  ) async {
+    try {
+      String tempPath =
+          '${Directory.systemTemp.path}/received_video_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      await File(tempPath).writeAsBytes(videoData);
+
+      // Show dialog with the received video
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Video Received from $senderIp'),
+            content: Text('Video saved to: $tempPath'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+
+      log('_listenForVideoStream Video saved to: $tempPath');
+    } catch (e) {
+      log('_listenForVideoStream Error saving video: $e');
+    }
   }
 
   Future<void> _startPlayerForStream() async {
@@ -517,230 +800,309 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      _cameraController?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      if (_cameraController != null) {
+        _initCamera();
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      // resizeToAvoidBottomInset :false,
-      extendBodyBehindAppBar: true,
-      // appBar: AppBar(title: Text(''), automaticallyImplyLeading: false),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFFFF6767), Color(0xFF11E0DC)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+    return SafeArea(
+      bottom: true,
+      top: true,
+      right: true,
+      left: true,
+      child: Scaffold(
+        // resizeToAvoidBottomInset :false,
+        extendBodyBehindAppBar: true,
+        // appBar: AppBar(title: Text(''), automaticallyImplyLeading: false),
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFFFF6767), Color(0xFF11E0DC)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
           ),
-        ),
-        child: Column(
-          children: [
-            SizedBox(height: kToolbarHeight),
-            Text(
-              "Connected Users",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            if (connectedUsers.isEmpty)
+          child: Column(
+            children: [
+              SizedBox(height: kToolbarHeight),
+
+              // Camera Preview Section
+              if (_isCameraInitialized)
+                Container(
+                  height: 200,
+                  margin: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: CameraPreview(_cameraController!),
+                  ),
+                ),
+
+              Text(
+                "Connected Users",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              if (connectedUsers.isEmpty)
+                Padding(
+                  padding: EdgeInsets.all(8.0),
+                  child: Text(
+                    "No users connected yet",
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                )
+              else
+                Column(
+                  children: connectedUsers.map((ip) {
+                    bool isHost = ip == widget.hostIp;
+                    bool isMe = ip == _myIpAddress;
+
+                    String displayText;
+                    if (isHost && isMe) {
+                      displayText = "You";
+                    } else if (isHost) {
+                      displayText = "Host";
+                    } else if (isMe) {
+                      displayText = "You";
+                    } else {
+                      displayText = "User";
+                    }
+
+                    return Container(
+                      margin: EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+                      padding: EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.grey.shade300,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isHost ? Icons.cell_tower : Icons.person,
+                            color: isHost ? Colors.blueGrey : Colors.blueGrey,
+                            size: 20,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            "$displayText: $ip",
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+
+              // SizedBox(height: 0),
+              // Text("Chat Messages",
+              //     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Expanded(
+                child: Container(
+                  margin: EdgeInsets.all(10),
+                  padding: EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: messages.isEmpty
+                      ? Center(
+                          child: Text(
+                            "No messages yet",
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: messages.length,
+                          itemBuilder: (context, index) {
+                            return Container(
+                              margin: EdgeInsets.symmetric(vertical: 5),
+                              padding: EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: messages[index].startsWith("You:")
+                                    ? Colors.green[100] // Sent message
+                                    : Colors.white, // Received message
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                messages[index],
+                                style: TextStyle(fontSize: 14),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ),
               Padding(
-                padding: EdgeInsets.all(8.0),
-                child: Text(
-                  "No users connected yet",
-                  style: TextStyle(
-                    color: Colors.grey,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w400,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(30),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: messageController,
+                          decoration: InputDecoration(
+                            hintText: "Type a message...",
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 14,
+                            ),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => _sendMessage(messageController.text),
+                        icon: Icon(Icons.send, color: Colors.blueAccent),
+                        splashRadius: 24,
+                      ),
+                    ],
                   ),
                 ),
-              )
-            else
+              ),
+
               Column(
-                children: connectedUsers.map((ip) {
-                  bool isHost = ip == widget.hostIp;
-                  bool isMe = ip == _myIpAddress;
-
-                  String displayText;
-                  if (isHost && isMe) {
-                    displayText = "You";
-                  } else if (isHost) {
-                    displayText = "Host";
-                  } else if (isMe) {
-                    displayText = "You";
-                  } else {
-                    displayText = "User";
-                  }
-
-                  return Container(
-                    margin: EdgeInsets.symmetric(vertical: 4, horizontal: 16),
-                    padding: EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300, width: 1),
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    "Video Recording",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
                     ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          isHost ? Icons.cell_tower : Icons.person,
-                          color: isHost ? Colors.blueGrey : Colors.blueGrey,
-                          size: 20,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          "$displayText: $ip",
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.black87,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
-
-            // SizedBox(height: 0),
-            // Text("Chat Messages",
-            //     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            Expanded(
-              child: Container(
-                margin: EdgeInsets.all(10),
-                padding: EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: messages.isEmpty
-                    ? Center(
-                        child: Text(
-                          "No messages yet",
-                          style: TextStyle(color: Colors.grey),
-                        ),
-                      )
-                    : ListView.builder(
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          return Container(
-                            margin: EdgeInsets.symmetric(vertical: 5),
-                            padding: EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: messages[index].startsWith("You:")
-                                  ? Colors.green[100] // Sent message
-                                  : Colors.white, // Received message
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              messages[index],
-                              style: TextStyle(fontSize: 14),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(30),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 8,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: messageController,
-                        decoration: InputDecoration(
-                          hintText: "Type a message...",
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 14,
-                          ),
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => _sendMessage(messageController.text),
-                      icon: Icon(Icons.send, color: Colors.blueAccent),
-                      splashRadius: 24,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Text(
-                  "Voice Message",
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
                   ),
-                ),
-                SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // Recording Button
-                    IconButton(
-                      onPressed: _isRecording
-                          ? _stopRecording
-                          : _startRecording,
-                      icon: Icon(
-                        _isRecording ? Icons.stop_circle : Icons.mic,
-                        size: 36,
-                        color: _isRecording
-                            ? Colors.redAccent
-                            : Colors.blueAccent,
-                      ),
-                      tooltip: _isRecording
-                          ? 'Stop Recording'
-                          : 'Start Recording',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.grey[200],
-                        padding: EdgeInsets.all(12),
-                        shape: CircleBorder(),
-                        shadowColor: Colors.black.withOpacity(0.2),
-                        elevation: 4,
-                      ),
-                    ),
-                    SizedBox(width: 16),
-                    // Push-to-Talk Button
-                    IconButton(
-                      onPressed: _isStreaming
-                          ? _stopStreaming
-                          : _startStreaming,
-                      icon: Icon(
-                        _isStreaming ? Icons.cancel : Icons.record_voice_over,
-                        size: 36,
-                        color: _isStreaming
-                            ? Colors.orangeAccent
-                            : Colors.greenAccent,
-                      ),
-                      tooltip: _isStreaming ? 'Stop Talking' : 'Push to Talk',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.grey[200],
-                        padding: EdgeInsets.all(12),
-                        shape: CircleBorder(),
-                        shadowColor: Colors.black.withOpacity(0.2),
-                        elevation: 4,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
 
-            SizedBox(height: kToolbarHeight),
-          ],
+                  Text(
+                    "Voice Message",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Video Recording Button
+                      IconButton(
+                        onPressed: _isRecordingVideo
+                            ? _stopVideoRecording
+                            : _startVideoRecording,
+                        icon: Icon(
+                          _isRecordingVideo
+                              ? Icons.videocam_off
+                              : Icons.videocam,
+                          size: 36,
+                          color: _isRecordingVideo
+                              ? Colors.redAccent
+                              : Colors.blueAccent,
+                        ),
+                        tooltip: _isRecordingVideo
+                            ? 'Stop Video Recording'
+                            : 'Start Video Recording',
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.grey[200],
+                          padding: EdgeInsets.all(12),
+                          shape: CircleBorder(),
+                          shadowColor: Colors.black.withOpacity(0.2),
+                          elevation: 4,
+                        ),
+                      ),
+                      SizedBox(width: 16),
+
+                      // Recording Button
+                      IconButton(
+                        onPressed: _isRecording
+                            ? _stopRecording
+                            : _startRecording,
+                        icon: Icon(
+                          _isRecording ? Icons.stop_circle : Icons.mic,
+                          size: 36,
+                          color: _isRecording
+                              ? Colors.redAccent
+                              : Colors.blueAccent,
+                        ),
+                        tooltip: _isRecording
+                            ? 'Stop Recording'
+                            : 'Start Recording',
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.grey[200],
+                          padding: EdgeInsets.all(12),
+                          shape: CircleBorder(),
+                          shadowColor: Colors.black.withOpacity(0.2),
+                          elevation: 4,
+                        ),
+                      ),
+                      SizedBox(width: 16),
+                      // Push-to-Talk Button
+                      IconButton(
+                        onPressed: _isStreaming
+                            ? _stopStreaming
+                            : _startStreaming,
+                        icon: Icon(
+                          _isStreaming ? Icons.cancel : Icons.record_voice_over,
+                          size: 36,
+                          color: _isStreaming
+                              ? Colors.orangeAccent
+                              : Colors.greenAccent,
+                        ),
+                        tooltip: _isStreaming ? 'Stop Talking' : 'Push to Talk',
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.grey[200],
+                          padding: EdgeInsets.all(12),
+                          shape: CircleBorder(),
+                          shadowColor: Colors.black.withOpacity(0.2),
+                          elevation: 4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+
+              SizedBox(height: kToolbarHeight),
+            ],
+          ),
         ),
       ),
     );
@@ -748,11 +1110,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cameraController?.dispose();
+    _videoChunkTimer?.cancel();
     udpSocket?.close();
-    // _audioStreamController.close();
-
-    _audioRecorder!.closeRecorder();
-    _audioPlayer!.closePlayer();
+    _audioRecorder?.closeRecorder();
+    _audioPlayer?.closePlayer();
+    _audioStreamController?.close();
     super.dispose();
   }
 }
