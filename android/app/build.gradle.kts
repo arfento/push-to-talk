@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.example.push_to_talk_app"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
