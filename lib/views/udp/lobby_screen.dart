@@ -53,6 +53,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   List<Uint8List> _videoBuffer = [];
   static const int VIDEO_PORT = 6007;
 
+  // TCP Server for file transfer (Host only)
+  ServerSocket? _tcpServer;
+  static const int TCP_FILE_PORT = 6008;
+
+  // TCP Client for file transfer
+  List<Socket> _tcpClients = [];
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +82,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _listenForAudio();
     _listenForStreamedAudio(); // New listener for real-time audio
     _listenForVideoStream(); // New listener for video
+
+    if (widget.isHost) {
+      _startTcpServer();
+    }
+    _connectToTcpServer();
   }
 
   Future<String?> getLocalIp() async {
@@ -82,7 +94,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
         if (addr.type == InternetAddressType.IPv4 &&
-            addr.address.startsWith("172.16.")) {
+            (addr.address.startsWith("172.16.") ||
+                addr.address.startsWith("192.168."))) {
           setState(() {
             _myIpAddress = addr.address;
           });
@@ -175,7 +188,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       });
 
       // Send the complete video file
-      await _sendVideoFile(file);
+      // await _sendVideoFile(file);
+      await _sendVideoFileOverTCP(file);
 
       log('_listenForVideoStream Stopped video recording');
     } catch (e) {
@@ -447,12 +461,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     Uint8List videoData,
     String senderIp,
   ) async {
-    log('_listenForVideoStream _saveAndDisplayVideo $senderIp');
+    log('sendvideo _listenForVideoStream _saveAndDisplayVideo $senderIp');
 
     try {
       String tempPath =
           '${Directory.systemTemp.path}/received_video_${DateTime.now().millisecondsSinceEpoch}.mp4';
       await File(tempPath).writeAsBytes(videoData);
+      log('sendvideo _listenForVideoStream _saveAndDisplayVideo $tempPath');
 
       // Show dialog with the received video
       if (mounted) {
@@ -478,9 +493,103 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         );
       }
 
-      log('_listenForVideoStream Video saved to: $tempPath');
+      log('sendvideo _listenForVideoStream Video saved to: $tempPath');
     } catch (e) {
-      log('_listenForVideoStream Error saving video: $e');
+      log('sendvideo _listenForVideoStream Error saving video: $e');
+    }
+  }
+
+  // List all videos in the directory (for debugging)
+  Future<void> _listAllVideos() async {
+    try {
+      String directory = await _getAppDirectory();
+      log('sendvideo _listAllVideos directory: $directory');
+
+      final videoDir = Directory(directory);
+      log('sendvideo _listAllVideos videoDir: $videoDir');
+      if (!await videoDir.exists()) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('No videos found')));
+        }
+        return;
+      }
+
+      if (await videoDir.exists()) {
+        log('sendvideo _listAllVideos videoDir.exists(): ${videoDir.exists()}');
+
+        List<FileSystemEntity> files = videoDir.listSync();
+        List<FileSystemEntity> videoFiles = files
+            .where(
+              (file) =>
+                  file.path.toLowerCase().endsWith('.mp4') ||
+                  file.path.toLowerCase().endsWith('.mov'),
+            )
+            .toList();
+
+        if (videoFiles.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('No videos found')));
+          }
+          return;
+        }
+
+        log("sendvideo 📁 Videos in directory: ${videoFiles.length}");
+        for (var file in videoFiles) {
+          log("sendvideo   - ${file.path.split('/').last}");
+        }
+
+        // Show dialog with video list
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Received Videos (${videoFiles.length})'),
+            content: Container(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: videoFiles.length,
+                itemBuilder: (context, index) {
+                  String fileName = videoFiles[index].path.split('/').last;
+                  return ListTile(
+                    leading: Icon(Icons.video_library, color: Colors.blue),
+                    title: Text(fileName),
+                    onTap: () {
+                      // Play the video
+                      Navigator.pop(context);
+                      showDialog(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (context) =>
+                            VideoPathDialog(videoPath: videoFiles[index].path),
+                      );
+                      // _playVideo(File(videoFiles[index].path));
+                    },
+                    trailing: IconButton(
+                      icon: Icon(Icons.delete, color: Colors.red),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        // _deleteVideo(File(videoFiles[index].path));
+                      },
+                    ),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Close'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      log("sendvideo ❌ Error listing videos: $e");
     }
   }
 
@@ -539,8 +648,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     await _audioRecorder!.startRecorder(
       codec: Codec.pcm16,
       numChannels: 2,
-      sampleRate: 48000,
-      // sampleRate: Platform.isIOS ? 44100 : 16000,
+      // sampleRate: 48000,
+      sampleRate: Platform.isIOS ? 44100 : 16000,
       bitRate: 16000,
       // bufferSize: 1024, // 8192
       bufferSize: 1024,
@@ -609,51 +718,89 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   void _listenForStreamedAudio() async {
-    UDP receiver = await UDP.bind(Endpoint.any(port: Port(6006)));
-    print("🔄 [CLIENT] Listening for streamed audio on port 6006...");
+    try {
+      UDP receiver = await UDP.bind(Endpoint.any(port: Port(6006)));
+      print("🔄 [CLIENT] Listening for streamed audio on port 6006...");
 
-    receiver.asStream().listen((datagram) async {
-      if (datagram != null && datagram.data.isNotEmpty) {
-        Uint8List audioData = datagram.data;
+      receiver.asStream().listen(
+        (datagram) async {
+          if (datagram != null && datagram.data.isNotEmpty) {
+            Uint8List audioData = datagram.data;
 
-        // // ✅ Stop signal
-        // if (audioData.length == 4 && audioData.every((b) => b == 0xFF)) {
-        //   await _stopPlayerForStream();
-        //   _silenceTimer?.cancel();
-        //   print("🛑 [CLIENT] Received stop signal");
-        //   return;
-        // }
+            // // ✅ Stop signal
+            // if (audioData.length == 4 && audioData.every((b) => b == 0xFF)) {
+            //   await _stopPlayerForStream();
+            //   _silenceTimer?.cancel();
+            //   print("🛑 [CLIENT] Received stop signal");
+            //   return;
+            // }
 
-        // Check for stop signal
-        if (audioData.length == 4 &&
-            audioData[0] == 0xFF &&
-            audioData[1] == 0xFF &&
-            audioData[2] == 0xFF &&
-            audioData[3] == 0xFF) {
-          await _stopPlayerForStream();
-          _silenceTimer?.cancel();
-          return;
-        }
+            // Validate data before processing
+            if (audioData.length % 2 != 0) {
+              print(
+                "⚠️ Skipping misaligned audio chunk: ${audioData.length} bytes",
+              );
+              return;
+            }
 
-        // Ensure player is ready before feeding data
-        await _startPlayerForStream();
+            // Check for stop signal
+            if (audioData.length == 4 &&
+                audioData[0] == 0xFF &&
+                audioData[1] == 0xFF &&
+                audioData[2] == 0xFF &&
+                audioData[3] == 0xFF) {
+              await _stopPlayerForStream();
+              _silenceTimer?.cancel();
+              return;
+            }
 
-        // Reset silence timer
-        _silenceTimer?.cancel();
-        _silenceTimer = Timer(Duration(milliseconds: 100), () async {
-          await _stopPlayerForStream();
-          print("🔇 [CLIENT] No audio for 500ms, stopping player...");
-        });
+            // Process valid audio data
+            await _processAudioData(audioData);
 
-        // Feed audio data
-        try {
-          print("📥 Received audio chunk size: ${audioData.length}");
-          await _audioPlayer!.feedUint8FromStream(audioData);
-        } catch (e) {
-          print("⚠️ [CLIENT] Error feeding audio stream: $e");
-        }
-      }
-    });
+            // // Ensure player is ready before feeding data
+            // await _startPlayerForStream();
+
+            // // Reset silence timer
+            // _silenceTimer?.cancel();
+            // _silenceTimer = Timer(Duration(milliseconds: 100), () async {
+            //   await _stopPlayerForStream();
+            //   print("🔇 [CLIENT] No audio for 500ms, stopping player...");
+            // });
+
+            // // Feed audio data
+            // try {
+            //   print("📥 Received audio chunk size: ${audioData.length}");
+            //   await _audioPlayer!.feedUint8FromStream(audioData);
+            // } catch (e) {
+            //   print("⚠️ [CLIENT] Error feeding audio stream: $e");
+            // }
+          }
+        },
+        onError: (error) {
+          print("❌ [AUDIO] UDP reception error: $error");
+        },
+      );
+    } catch (e) {
+      print("❌ [AUDIO] Error binding UDP socket: $e");
+    }
+  }
+
+  Future<void> _processAudioData(Uint8List audioData) async {
+    try {
+      await _startPlayerForStream();
+
+      _silenceTimer?.cancel();
+      _silenceTimer = Timer(Duration(milliseconds: 500), () async {
+        await _stopPlayerForStream();
+        print("🔇 [CLIENT] No audio for 500ms, stopping player...");
+      });
+
+      print("📥 Received audio chunk size: ${audioData.length}");
+
+      await _audioPlayer!.feedUint8FromStream(audioData);
+    } catch (e) {
+      print("❌ [AUDIO] Error processing audio: $e");
+    }
   }
 
   void _listenForAudio() async {
@@ -934,6 +1081,202 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
+  // TCP Server for reliable file transfer
+  void _startTcpServer() async {
+    try {
+      _tcpServer = await ServerSocket.bind(
+        InternetAddress.anyIPv4,
+        TCP_FILE_PORT,
+      );
+      log(
+        "sendvideo _startTcpServer 🚀 [HOST] TCP File Server started on port $TCP_FILE_PORT",
+      );
+
+      _tcpServer!.listen((Socket client) {
+        log(
+          "sendvideo _startTcpServer 📁 [HOST] New TCP client connected: ${client.remoteAddress.address}",
+        );
+        _tcpClients.add(client);
+
+        // Listen for incoming files
+        _handleIncomingFiles(client);
+
+        client.done.then((_) {
+          _tcpClients.remove(client);
+          log("sendvideo _startTcpServer 📁 [HOST] TCP client disconnected");
+        });
+      });
+    } catch (e) {
+      log("sendvideo _startTcpServer ❌ [HOST] Error starting TCP server: $e");
+    }
+  }
+
+  void _handleIncomingFiles(Socket client) {
+    List<int> fileBuffer = [];
+    int? fileSize;
+    int receivedBytes = 0;
+    String? fileName;
+
+    client.listen(
+      (List<int> data) {
+        try {
+          // First packet contains file info
+          if (fileSize == null) {
+            // Parse header: [fileSize:4bytes][fileNameLength:4bytes][fileName]
+            ByteData headerData = ByteData.sublistView(
+              Uint8List.fromList(data.sublist(0, 8)),
+            );
+            fileSize = headerData.getUint32(0, Endian.big);
+            int nameLength = headerData.getUint32(4, Endian.big);
+            fileName = String.fromCharCodes(data.sublist(8, 8 + nameLength));
+
+            log(
+              "sendvideo _handleIncomingFiles 📥 [HOST] Receiving file: $fileName, Size: $fileSize bytes",
+            );
+
+            // Add the remaining data to buffer
+            fileBuffer.addAll(data.sublist(8 + nameLength));
+            receivedBytes = fileBuffer.length;
+          } else {
+            fileBuffer.addAll(data);
+            receivedBytes += data.length;
+          }
+
+          // Show progress
+          double progress = (receivedBytes / fileSize!) * 100;
+          log(
+            "sendvideo _handleIncomingFiles 📥 [HOST] File progress: ${progress.toStringAsFixed(1)}%",
+          );
+
+          // File complete
+          if (receivedBytes >= fileSize!) {
+            _saveReceivedFile(Uint8List.fromList(fileBuffer), fileName!);
+            fileBuffer.clear();
+            fileSize = null;
+            receivedBytes = 0;
+            fileName = null;
+          }
+        } catch (e) {
+          log(
+            "sendvideo _handleIncomingFiles ❌ [HOST] Error processing file data: $e",
+          );
+        }
+      },
+      onError: (error) {
+        log("sendvideo _handleIncomingFiles ❌ [HOST] TCP client error: $error");
+        _tcpClients.remove(client);
+      },
+    );
+  }
+
+  // TCP Client connection for non-host clients
+  void _connectToTcpServer() async {
+    if (widget.isHost) return; // Host doesn't need to connect to itself
+
+    try {
+      Socket client = await Socket.connect(widget.hostIp, TCP_FILE_PORT);
+      _tcpClients.add(client);
+      log(
+        "sendvideo _connectToTcpServer 🔗 [CLIENT] Connected to TCP server at ${widget.hostIp}:$TCP_FILE_PORT",
+      );
+
+      // Listen for incoming files from host
+      _handleIncomingFiles(client);
+    } catch (e) {
+      log(
+        "sendvideo _connectToTcpServer ❌ [CLIENT] Error connecting to TCP server: $e",
+      );
+    }
+  }
+
+  // Send video file over TCP (Reliable)
+  Future<void> _sendVideoFileOverTCP(XFile videoFile) async {
+    if (_tcpClients.isEmpty) {
+      log("sendvideo ❌ No TCP connections available");
+      return;
+    }
+
+    try {
+      Uint8List videoData = await videoFile.readAsBytes();
+      String fileName = 'video_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      log('sendvideo _listenForVideoStream _sendVideoFileOverTCP $fileName');
+
+      // Create header: [fileSize:4bytes][fileNameLength:4bytes][fileName]
+      Uint8List fileNameBytes = Uint8List.fromList(fileName.codeUnits);
+      Uint8List header = Uint8List(8 + fileNameBytes.length);
+      ByteData headerData = ByteData.view(header.buffer);
+      headerData.setUint32(0, videoData.length, Endian.big);
+      headerData.setUint32(4, fileNameBytes.length, Endian.big);
+      header.setRange(8, 8 + fileNameBytes.length, fileNameBytes);
+
+      // Send header + file data
+      for (Socket client in _tcpClients) {
+        client.add(header);
+        client.add(videoData);
+        await client.flush();
+      }
+
+      log(
+        "sendvideo 📤 [TCP] Video file sent: $fileName (${videoData.length} bytes)",
+      );
+    } catch (e) {
+      log("sendvideo ❌ [TCP] Error sending video file: $e");
+    }
+  }
+
+  // Save received file
+  Future<void> _saveReceivedFile(Uint8List fileData, String fileName) async {
+    try {
+      String directory = await _getAppDirectory();
+      String filePath = '$directory/$fileName';
+
+      await File(filePath).writeAsBytes(fileData);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('File received: $fileName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+
+      log("sendvideo _saveReceivedFile 💾 File saved: $filePath");
+      if (filePath != null) {
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: Text('Video Received'),
+              content: Text('Video saved to: $filePath'),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (context) =>
+                          VideoPathDialog(videoPath: filePath),
+                    );
+                  },
+                  child: Text('OK'),
+                ),
+              ],
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      log("sendvideo _saveReceivedFile  ❌ Error saving file: $e");
+    }
+  }
+
+  Future<String> _getAppDirectory() async {
+    final directory = Directory.systemTemp;
+    return directory.path;
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -1143,6 +1486,24 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
+                      // list _listAllVideos
+                      IconButton(
+                        onPressed: _listAllVideos,
+                        icon: Icon(
+                          Icons.file_download_rounded,
+                          size: 36,
+                          color: Colors.blueAccent,
+                        ),
+                        tooltip: 'List file recording',
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.grey[200],
+                          padding: EdgeInsets.all(12),
+                          shape: CircleBorder(),
+                          shadowColor: Colors.black.withOpacity(0.2),
+                          elevation: 4,
+                        ),
+                      ),
+                      SizedBox(width: 16),
                       // Video Recording Button
                       IconButton(
                         onPressed: _isRecordingVideo
@@ -1238,6 +1599,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _audioRecorder?.closeRecorder();
     _audioPlayer?.closePlayer();
     _audioStreamController?.close();
+
+    for (Socket client in _tcpClients) {
+      client.destroy();
+    }
+    _tcpServer?.close();
     super.dispose();
   }
 }

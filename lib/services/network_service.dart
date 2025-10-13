@@ -131,7 +131,8 @@ class NetworkService {
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
         if (addr.type == InternetAddressType.IPv4 &&
-            addr.address.startsWith("172.16.")) {
+            (addr.address.startsWith("172.16.") ||
+                addr.address.startsWith("192.168."))) {
           // Ensure it's a WiFi IP
           print(
             "🔍 Found WiFi IP: ${addr.address} on interface: ${interface.name}",
@@ -153,7 +154,8 @@ class NetworkService {
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
         if (addr.type == InternetAddressType.IPv4 &&
-            addr.address.startsWith("172.16.")) {
+            (addr.address.startsWith("172.16.") ||
+                addr.address.startsWith("192.168."))) {
           // Ensure it's a WiFi IP
           return addr.address;
         }

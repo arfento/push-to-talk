@@ -9,9 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:push_to_talk_app/bloc/camera_bloc.dart';
 import 'package:push_to_talk_app/utils/enums/camera_enums.dart';
 import 'package:push_to_talk_app/utils/screenshot_utils.dart';
-import 'package:push_to_talk_app/views/video_stream/pages/video_player.dart';
 import 'package:push_to_talk_app/views/video_stream/widgets/animated_bar.dart';
-import 'package:push_to_talk_app/views/video_stream/widgets/video_dialog.dart';
 import 'package:push_to_talk_app/views/video_stream/widgets/video_path_dialog.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
