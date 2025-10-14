@@ -14,7 +14,9 @@ import 'package:push_to_talk_app/views/video_stream/widgets/video_path_dialog.da
 import 'package:visibility_detector/visibility_detector.dart';
 
 class CameraPage extends StatefulWidget {
-  const CameraPage({super.key});
+  final Function(String)? onVideoRecorded; // Change to String path
+
+  const CameraPage({super.key, this.onVideoRecorded});
 
   @override
   State<CameraPage> createState() => _CameraPageState();
@@ -89,11 +91,18 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       // Navigator.of(context).push(
       //   MaterialPageRoute(builder: (_) => VideoPage(videoFile: state.file)),
       // );
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => VideoPathDialog(videoPath: state.file.path),
-      );
+
+      if (widget.onVideoRecorded != null) {
+        Navigator.pop(context);
+        widget.onVideoRecorded!(state.file.path); // Pass the path as String
+      } else {
+        // Fallback to showing dialog if no callback provided
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => VideoPathDialog(videoPath: state.file.path),
+        );
+      }
     } else if (state is CameraReady && state.hasRecordingError) {
       // Show a snackbar when there is a recording error (less than 2 seconds)
       ScaffoldMessenger.of(context).showSnackBar(

@@ -1,17 +1,12 @@
-import 'package:camera/camera.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:push_to_talk_app/firebase_options.dart';
-import 'package:push_to_talk_app/push_to_talk_page.dart';
-import 'package:push_to_talk_app/push_to_talk_record.dart';
 import 'package:push_to_talk_app/utils/constants/constants.dart';
-import 'package:push_to_talk_app/views/audio_player_interaction.dart';
 import 'package:push_to_talk_app/views/auth/login_screen.dart';
 import 'package:push_to_talk_app/views/auth/register_screen.dart';
 import 'package:push_to_talk_app/views/home/walkie_talkie_screen.dart';
 import 'package:push_to_talk_app/views/ptt_screen.dart';
-import 'package:push_to_talk_app/views/speech_and_record_play.dart';
 import 'package:push_to_talk_app/views/udp/lobby_screen.dart';
 import 'package:push_to_talk_app/views/udp/udp_home_screen.dart';
 import 'package:push_to_talk_app/views/video_stream/video_home_page.dart';
@@ -56,7 +51,6 @@ class MyApp extends StatelessWidget {
         WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
         UdpHomeScreen.id: (context) => UdpHomeScreen(),
         VideoHomePage.id: (context) => VideoHomePage(),
-        // LobbyScreen.id: (context) => LobbyScreen(isHost: null,, hostIp: '',),
       },
       onGenerateRoute: (settings) {
         if (settings.name == LobbyScreen.id) {
@@ -66,7 +60,6 @@ class MyApp extends StatelessWidget {
               return LobbyScreen(
                 isHost: args['isHost'] as bool,
                 hostIp: args['hostIp'] as String,
-                cameras: args['cameras'] as List<CameraDescription>,
               );
             },
           );

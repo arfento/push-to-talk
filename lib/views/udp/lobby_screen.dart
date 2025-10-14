@@ -4,31 +4,25 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:push_to_talk_app/bloc/camera_bloc.dart';
+import 'package:push_to_talk_app/utils/camera_utils.dart';
+import 'package:push_to_talk_app/utils/permission_utils.dart';
 import 'package:push_to_talk_app/views/udp/file_transfer.dart';
-import 'package:push_to_talk_app/views/video_stream/widgets/video_dialog.dart';
+import 'package:push_to_talk_app/views/video_stream/pages/camera_page.dart';
 import 'package:push_to_talk_app/views/video_stream/widgets/video_path_dialog.dart';
 import 'package:udp/udp.dart';
 import 'package:flutter_sound/flutter_sound.dart';
-
-const int cstSAMPLERATE = 8000;
-const int cstCHANNELNB = 2;
-const int cstBITRATE = 16000;
 
 class LobbyScreen extends StatefulWidget {
   static const String id = 'lobby_screen';
   final bool isHost;
   final String hostIp; // Host's IP
-  final List<CameraDescription> cameras;
 
-  const LobbyScreen({
-    required this.isHost,
-    required this.hostIp,
-    required this.cameras,
-  });
+  const LobbyScreen({super.key, required this.isHost, required this.hostIp});
 
   @override
-  _LobbyScreenState createState() => _LobbyScreenState();
+  State<LobbyScreen> createState() => _LobbyScreenState();
 }
 
 class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
@@ -46,11 +40,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   bool _isPlayerReady = false; // Track if player is ready for streaming
 
   // Camera variables
-  CameraController? _cameraController;
-  bool _isRecordingVideo = false;
-  bool _isCameraInitialized = false;
-  Timer? _videoChunkTimer;
-  List<Uint8List> _videoBuffer = [];
   static const int VIDEO_PORT = 6007;
 
   // TCP Server for file transfer (Host only)
@@ -59,6 +48,15 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   // TCP Client for file transfer
   List<Socket> _tcpClients = [];
+
+  // Progress dialog variables
+  bool _isSendingFile = false;
+  double _fileTransferProgress = 0.0;
+  String _currentFileName = '';
+
+  //send & received message
+  TextEditingController messageController = TextEditingController();
+  List<String> messages = []; // Stores received messages
 
   @override
   void initState() {
@@ -69,8 +67,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
     _initAudio();
-
-    _initCamera();
 
     if (widget.isHost) {
       _startReceivingRequests();
@@ -111,204 +107,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     await _audioRecorder!.openRecorder();
     await _audioPlayer!.openPlayer();
     await _startPlayerForStream(); // Initial setup
-  }
-
-  Future<void> _initCamera() async {
-    try {
-      // Request camera permission
-      var status = await Permission.camera.request();
-      if (status != PermissionStatus.granted) {
-        log('_listenForVideoStream Camera permission denied');
-        return;
-      }
-
-      if (widget.cameras.isEmpty) {
-        log('_listenForVideoStream No cameras available');
-        return;
-      }
-
-      // Initialize camera controller
-      _cameraController = CameraController(
-        widget.cameras.first,
-        ResolutionPreset.medium,
-        enableAudio: true,
-      );
-
-      await _cameraController!.initialize();
-
-      setState(() {
-        _isCameraInitialized = true;
-      });
-
-      log('_listenForVideoStream Camera initialized successfully');
-    } catch (e) {
-      log('_listenForVideoStream Error initializing camera: $e');
-    }
-  }
-
-  void _startVideoRecording() async {
-    if (!_isCameraInitialized || _isRecordingVideo) return;
-
-    try {
-      setState(() {
-        _isRecordingVideo = true;
-      });
-
-      // Start video recording
-      await _cameraController!.startVideoRecording();
-
-      // Start sending video chunks periodically
-      _videoChunkTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
-        _captureAndSendVideoFrame();
-      });
-
-      log('_listenForVideoStream Started video recording and streaming');
-    } catch (e) {
-      log('_listenForVideoStream Error starting video recording: $e');
-      setState(() {
-        _isRecordingVideo = false;
-      });
-    }
-  }
-
-  void _stopVideoRecording() async {
-    if (!_isRecordingVideo) return;
-
-    try {
-      _videoChunkTimer?.cancel();
-      _videoChunkTimer = null;
-
-      // Stop video recording
-      final file = await _cameraController!.stopVideoRecording();
-
-      log("_listenForVideoStream _stopVideoRecording $file");
-
-      setState(() {
-        _isRecordingVideo = false;
-      });
-
-      // Send the complete video file
-      // await _sendVideoFile(file);
-      await _sendVideoFileOverTCP(file);
-
-      log('_listenForVideoStream Stopped video recording');
-    } catch (e) {
-      log('_listenForVideoStream Error stopping video recording: $e');
-    }
-  }
-
-  Future<void> _captureAndSendVideoFrame() async {
-    try {
-      if (_cameraController!.value.isStreamingImages && _isRecordingVideo) {
-        // Capture a frame (you might need to use a different approach based on your camera package)
-        // This is a simplified example - you might need to implement frame capture differently
-        XFile? imageFile = await _cameraController!.takePicture();
-        if (imageFile != null) {
-          Uint8List imageData = await imageFile.readAsBytes();
-          _sendVideoChunk(imageData);
-        }
-      }
-    } catch (e) {
-      log('_listenForVideoStream Error capturing video frame: $e');
-    }
-  }
-
-  Future<void> _sendVideoChunk(Uint8List videoData) async {
-    if (videoData.isEmpty || connectedUsers.isEmpty) return;
-
-    try {
-      for (String ip in connectedUsers) {
-        if (ip != _myIpAddress) {
-          UDP sender = await UDP.bind(Endpoint.any());
-          await sender.send(
-            videoData,
-            Endpoint.unicast(InternetAddress(ip), port: Port(VIDEO_PORT)),
-          );
-          sender.close();
-        }
-      }
-    } catch (e) {
-      log('_listenForVideoStream Error sending video chunk: $e');
-    }
-  }
-
-  Future<void> _sendVideoFile(XFile videoFile) async {
-    try {
-      Uint8List videoData = await videoFile.readAsBytes();
-      log(
-        '_listenForVideoStream 📤 Sending video file: ${videoData.length} bytes',
-      );
-
-      // Use much smaller chunks for UDP reliability
-      const int CHUNK_SIZE = 1024; // 1KB chunks - much safer for UDP
-      int totalChunks = (videoData.length / CHUNK_SIZE).ceil();
-
-      log(
-        '_listenForVideoStream 📦 Dividing into $totalChunks chunks of $CHUNK_SIZE bytes',
-      );
-
-      for (int i = 0; i < totalChunks; i++) {
-        int start = i * CHUNK_SIZE;
-        int end = (i + 1) * CHUNK_SIZE;
-        if (end > videoData.length) end = videoData.length;
-
-        Uint8List chunk = videoData.sublist(start, end);
-
-        // Add header with chunk information
-        Uint8List header = Uint8List(12);
-        ByteData headerData = ByteData.view(header.buffer);
-        headerData.setUint32(0, videoData.length);
-        headerData.setUint32(4, i);
-        headerData.setUint32(8, totalChunks);
-
-        Uint8List packet = Uint8List.fromList([...header, ...chunk]);
-
-        log(
-          '_listenForVideoStream 📤 Sending chunk $i/$totalChunks (${packet.length} bytes)',
-        );
-
-        // Add retry mechanism for each chunk
-        bool sentSuccessfully = false;
-        for (int attempt = 0; attempt < 3 && !sentSuccessfully; attempt++) {
-          try {
-            for (String ip in connectedUsers) {
-              if (ip != _myIpAddress) {
-                UDP sender = await UDP.bind(Endpoint.any());
-                await sender.send(
-                  packet,
-                  Endpoint.unicast(InternetAddress(ip), port: Port(VIDEO_PORT)),
-                );
-                sender.close();
-              }
-            }
-            sentSuccessfully = true;
-            log('_listenForVideoStream ✅ Chunk $i sent successfully');
-          } catch (e) {
-            log(
-              '_listenForVideoStream ❌ Failed to send chunk $i, attempt ${attempt + 1}/3: $e',
-            );
-            if (attempt < 2) {
-              await Future.delayed(Duration(milliseconds: 100));
-            }
-          }
-        }
-
-        if (!sentSuccessfully) {
-          log(
-            '_listenForVideoStream 💥 Failed to send chunk $i after 3 attempts',
-          );
-        }
-
-        // Increase delay to prevent network congestion
-        await Future.delayed(Duration(milliseconds: 50));
-      }
-
-      log(
-        '_listenForVideoStream ✅ Video file sent successfully: ${videoFile.path}',
-      );
-    } catch (e) {
-      log('_listenForVideoStream ❌ Error sending video file: $e');
-    }
   }
 
   void _listenForVideoStream() async {
@@ -447,16 +245,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     });
   }
 
-  // Optional: Method for real-time frame display
-  void _displayRealTimeVideoFrame(Uint8List frameData, String senderIp) {
-    // You can implement real-time video display here
-    // This would require a different approach - possibly using a image widget
-    // and converting the frame data to an image
-    log(
-      '_listenForVideoStream 🎬 Real-time frame from $senderIp: ${frameData.length} bytes',
-    );
-  }
-
   Future<void> _saveAndDisplayVideo(
     Uint8List videoData,
     String senderIp,
@@ -572,7 +360,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                       icon: Icon(Icons.delete, color: Colors.red),
                       onPressed: () {
                         Navigator.pop(context);
-                        // _deleteVideo(File(videoFiles[index].path));
+                        _deleteVideo(File(videoFiles[index].path));
                       },
                     ),
                   );
@@ -593,35 +381,42 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
+  // Delete video method
+  void _deleteVideo(File videoFile) async {
+    try {
+      await videoFile.delete();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Video deleted'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print("❌ Error deleting video: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete video'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _startPlayerForStream() async {
     if (!_isPlayerReady) {
-      // if (_audioPlayer!.isStopped) {
-      // await _audioPlayer!.startPlayerFromStream(
-      //   codec: Codec.pcm16, //_codec,
-      //   numChannels: cstCHANNELNB,
-      //   sampleRate: cstSAMPLERATE, // tSTREAMSAMPLERATE, //tSAMPLERATE,
-      //   interleaved: true,
-      //   bufferSize: 1024,
-      // );
       await _audioPlayer!.startPlayerFromStream(
         codec: Codec.pcm16,
         numChannels: 2,
-        sampleRate: 48000,
+        sampleRate: Platform.isIOS ? 44100 : 16000,
+        // sampleRate: 48000,
         interleaved: true,
         bufferSize: 1024,
       );
 
-      // await _audioPlayer!.startPlayerFromStream(
-      //   codec: Codec.pcm16,
-      //   numChannels: 2,
-      //   sampleRate: 44100,
-      //   // sampleRate: Platform.isIOS ? 44100 : 16000,
-      //   interleaved: false,
-      //   bufferSize: 2048,
-      //   // bufferSize:
-      //   //     // 8192,
-      //   //     1024,
-      // );
       _isPlayerReady = true;
       print("🎵 [CLIENT] Player initialized for streaming");
       // }
@@ -693,18 +488,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
     print("📤 Sending audio chunk size: ${audioChunk.length}");
 
-    // for (var audio in bufferUint8) {
-    //   for (String ip in connectedUsers) {
-    //     if (ip != _myIpAddress) {
-    //       UDP sender = await UDP.bind(Endpoint.any());
-    //       await sender.send(
-    //         audio,
-    //         Endpoint.unicast(InternetAddress(ip), port: Port(6006)),
-    //       );
-    //       sender.close();
-    //     }
-    //   }
-    // }
     for (String ip in connectedUsers) {
       if (ip != _myIpAddress) {
         UDP sender = await UDP.bind(Endpoint.any());
@@ -727,14 +510,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
           if (datagram != null && datagram.data.isNotEmpty) {
             Uint8List audioData = datagram.data;
 
-            // // ✅ Stop signal
-            // if (audioData.length == 4 && audioData.every((b) => b == 0xFF)) {
-            //   await _stopPlayerForStream();
-            //   _silenceTimer?.cancel();
-            //   print("🛑 [CLIENT] Received stop signal");
-            //   return;
-            // }
-
             // Validate data before processing
             if (audioData.length % 2 != 0) {
               print(
@@ -756,24 +531,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
             // Process valid audio data
             await _processAudioData(audioData);
-
-            // // Ensure player is ready before feeding data
-            // await _startPlayerForStream();
-
-            // // Reset silence timer
-            // _silenceTimer?.cancel();
-            // _silenceTimer = Timer(Duration(milliseconds: 100), () async {
-            //   await _stopPlayerForStream();
-            //   print("🔇 [CLIENT] No audio for 500ms, stopping player...");
-            // });
-
-            // // Feed audio data
-            // try {
-            //   print("📥 Received audio chunk size: ${audioData.length}");
-            //   await _audioPlayer!.feedUint8FromStream(audioData);
-            // } catch (e) {
-            //   print("⚠️ [CLIENT] Error feeding audio stream: $e");
-            // }
           }
         },
         onError: (error) {
@@ -865,30 +622,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       }
     }
   }
-
-  // void _listenForAudio() async {
-  //   UDP receiver = await UDP.bind(Endpoint.any(port: Port(6005)));
-  //   print("🔄 [CLIENT] Listening for audio on port 6005...");
-  //
-  //   receiver.asStream().listen((datagram) async {
-  //     if (datagram != null && datagram.data.isNotEmpty) {
-  //       Uint8List audioData = datagram.data;
-  //       await _playAudio(audioData);
-  //     }
-  //   });
-  // }
-  //
-  // Future<void> _playAudio(Uint8List audioData) async {
-  //   String tempPath = '${Directory.systemTemp.path}/audio.aac';
-  //   await File(tempPath).writeAsBytes(audioData);
-  //   await _audioPlayer!.startPlayer(fromURI: tempPath, codec: Codec.aacADTS);
-  // }
-
-  // Future<void> _playAudio(Uint8List audioData) async {
-  //   String tempPath = '${Directory.systemTemp.path}/audio.aac';
-  //   await File(tempPath).writeAsBytes(audioData);
-  //   await _audioPlayer!.startPlayer(fromURI: tempPath, codec: Codec.aacADTS);
-  // }
 
   void _startReceivingRequests() async {
     udpSocket = await UDP.bind(
@@ -988,50 +721,39 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   void _listenForUpdates() async {
     UDP receiver = await UDP.bind(Endpoint.any(port: Port(6003)));
-    print("🔄 [CLIENT] Listening for user list updates on port 6003...");
+    log("🔄 [CLIENT] Listening for user list updates on port 6003...");
 
     receiver.asStream().listen(
       (datagram) {
         if (datagram != null && datagram.data.isNotEmpty) {
           String receivedData = String.fromCharCodes(datagram.data);
           List<String> updatedUsers = receivedData.split(',');
-          print("receivedData $receivedData");
+          log("receivedData $receivedData");
 
           if (receivedData.contains(',') ||
               RegExp(r'^(\d{1,3}\.){3}\d{1,3}$').hasMatch(receivedData)) {
             List<String> updatedUsers = receivedData.split(',');
-            print("🔄 [CLIENT] Received updated user list: $updatedUsers");
+            log("🔄 [CLIENT] Received updated user list: $updatedUsers");
 
             setState(() {
               connectedUsers = updatedUsers;
             });
           }
-          // print(
-          //     "🔄 [CLIENT] Received updated user list: $updatedUsers"); // Debug log
-          //
-          // setState(() {
-          //   print("connectedUsers IP ADDRESS$connectedUsers");
-          //
-          //   connectedUsers = updatedUsers;
-          // });
 
-          print("🔄 [CLIENT] State updated with: $connectedUsers");
+          log("🔄 [CLIENT] State updated with: $connectedUsers");
         }
       },
       onError: (error) {
-        print("❌ [CLIENT] Error receiving user list updates: $error");
+        log("❌ [CLIENT] Error receiving user list updates: $error");
       },
     );
   }
-
-  TextEditingController messageController = TextEditingController();
-  List<String> messages = []; // Stores received messages
 
   void _sendMessage(String message) async {
     if (message.trim().isEmpty) return;
 
     Uint8List data = Uint8List.fromList(message.codeUnits);
-    print("📢 Sending message: $message");
+    log("📢 Sending message: $message");
 
     // Ensure message is sent to all users, including the host
     for (String ip in connectedUsers) {
@@ -1064,21 +786,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         });
       }
     });
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return;
-    }
-
-    if (state == AppLifecycleState.inactive) {
-      _cameraController?.dispose();
-    } else if (state == AppLifecycleState.resumed) {
-      if (_cameraController != null) {
-        _initCamera();
-      }
-    }
   }
 
   // TCP Server for reliable file transfer
@@ -1193,8 +900,23 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   Future<void> _sendVideoFileOverTCP(XFile videoFile) async {
     if (_tcpClients.isEmpty) {
       log("sendvideo ❌ No TCP connections available");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No TCP connections available'),
+          backgroundColor: Colors.red,
+        ),
+      );
       return;
     }
+
+    setState(() {
+      _isSendingFile = true;
+      _fileTransferProgress = 0.0;
+      _currentFileName = videoFile.name;
+    });
+
+    // Show progress dialog
+    _showFileTransferProgressDialog();
 
     try {
       Uint8List videoData = await videoFile.readAsBytes();
@@ -1210,17 +932,75 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       header.setRange(8, 8 + fileNameBytes.length, fileNameBytes);
 
       // Send header + file data
-      for (Socket client in _tcpClients) {
-        client.add(header);
-        client.add(videoData);
-        await client.flush();
+      List<Socket> clients = List.from(_tcpClients);
+      int totalClients = clients.length;
+      int successfulSends = 0;
+
+      for (int i = 0; i < clients.length; i++) {
+        Socket client = clients[i];
+        try {
+          // Simple check - try to get the remote address
+          await client.remoteAddress;
+
+          // Update progress for client connection
+          _updateFileTransferProgress(
+            (i / totalClients) * 0.1, // 10% for connections
+            'Connecting to client ${i + 1}/$totalClients',
+          );
+
+          client.add(header);
+          client.add(videoData);
+          await client.flush();
+
+          successfulSends++;
+          log("sendvideo 📤 [TCP] Video file sent to client: $fileName");
+
+          // Update progress for successful send
+          _updateFileTransferProgress(
+            0.1 +
+                (successfulSends / totalClients) *
+                    0.9, // Remaining 90% for data transfer
+            'Sent to $successfulSends/$totalClients clients',
+          );
+        } catch (e) {
+          log("sendvideo ❌ [TCP] Client error, removing: $e");
+          _tcpClients.remove(client);
+        }
       }
+      // Final progress update
+      _updateFileTransferProgress(1.0, 'Transfer completed');
+
+      await Future.delayed(
+        Duration(milliseconds: 500),
+      ); // Show completion briefly
 
       log(
-        "sendvideo 📤 [TCP] Video file sent: $fileName (${videoData.length} bytes)",
+        "sendvideo 📤 [TCP] Video file sent: $fileName (${videoData.length} bytes) to $successfulSends clients",
       );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Video sent to $successfulSends client(s)'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } catch (e) {
       log("sendvideo ❌ [TCP] Error sending video file: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sending video file: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      setState(() {
+        _isSendingFile = false;
+      });
+      _hideFileTransferProgressDialog();
     }
   }
 
@@ -1299,22 +1079,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
           child: Column(
             children: [
               SizedBox(height: kToolbarHeight),
-
-              // Camera Preview Section
-              if (_isCameraInitialized)
-                Container(
-                  height: 200,
-                  margin: EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: CameraPreview(_cameraController!),
-                  ),
-                ),
-
               Text(
                 "Connected Users",
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -1412,7 +1176,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: Text(
-                                messages[index],
+                                "${messages[index]}",
                                 style: TextStyle(fontSize: 14),
                               ),
                             );
@@ -1473,16 +1237,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                       color: Colors.black87,
                     ),
                   ),
-
-                  Text(
-                    "Voice Message",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  SizedBox(height: 12),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -1504,23 +1258,45 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                         ),
                       ),
                       SizedBox(width: 16),
+
                       // Video Recording Button
                       IconButton(
-                        onPressed: _isRecordingVideo
-                            ? _stopVideoRecording
-                            : _startVideoRecording,
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => BlocProvider(
+                                create: (context) {
+                                  return CameraBloc(
+                                    cameraUtils: CameraUtils(),
+                                    permissionUtils: PermissionUtils(),
+                                  )..add(
+                                    const CameraInitialize(recordingLimit: 15),
+                                  );
+                                },
+                                child: CameraPage(
+                                  onVideoRecorded: (String videoPath) async {
+                                    // Handle the recorded video path here
+                                    print(
+                                      'sendvideo Video recorded at: $videoPath',
+                                    );
+
+                                    // Create XFile from path
+                                    XFile xFile = XFile(videoPath);
+                                    await _sendVideoFileOverTCP(xFile);
+
+                                    // You can navigate to another screen, upload the video, etc.
+                                  },
+                                ),
+                              ),
+                            ),
+                          );
+                        },
                         icon: Icon(
-                          _isRecordingVideo
-                              ? Icons.videocam_off
-                              : Icons.videocam,
+                          Icons.videocam,
                           size: 36,
-                          color: _isRecordingVideo
-                              ? Colors.redAccent
-                              : Colors.blueAccent,
+                          color: Colors.blueAccent,
                         ),
-                        tooltip: _isRecordingVideo
-                            ? 'Stop Video Recording'
-                            : 'Start Video Recording',
+                        tooltip: 'Record Video',
                         style: IconButton.styleFrom(
                           backgroundColor: Colors.grey[200],
                           padding: EdgeInsets.all(12),
@@ -1529,13 +1305,41 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                           elevation: 4,
                         ),
                       ),
-                      SizedBox(width: 16),
-
+                    ],
+                  ),
+                  Text(
+                    "Voice Message",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
                       // Recording Button
                       IconButton(
-                        onPressed: _isRecording
-                            ? _stopRecording
-                            : _startRecording,
+                        onPressed: () async {
+                          if (_isRecording) {
+                            _stopRecording();
+                          } else {
+                            if (await PermissionUtils()
+                                .getCameraAndMicrophonePermissionStatus()) {
+                              _startRecording();
+                            } else {
+                              if (await PermissionUtils().askForPermission()) {
+                                _startRecording();
+                              } else {
+                                log("Permission is denied");
+                                return Future.error(
+                                  "Permission is denied",
+                                ); // Throw the specific error type for permission denial
+                              }
+                            }
+                          }
+                        },
                         icon: Icon(
                           _isRecording ? Icons.stop_circle : Icons.mic,
                           size: 36,
@@ -1558,9 +1362,26 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
                       // Push-to-Talk Button
                       IconButton(
-                        onPressed: _isStreaming
-                            ? _stopStreaming
-                            : _startStreaming,
+                        onPressed: () async {
+                          if (_isStreaming) {
+                            _stopStreaming();
+                          } else {
+                            if (await PermissionUtils()
+                                .getCameraAndMicrophonePermissionStatus()) {
+                              _startStreaming();
+                            } else {
+                              if (await PermissionUtils().askForPermission()) {
+                                _startStreaming();
+                              } else {
+                                log("Permission is denied");
+                                return Future.error(
+                                  "Permission is denied",
+                                ); // Throw the specific error type for permission denial
+                              }
+                            }
+                          }
+                        },
+
                         icon: Icon(
                           _isStreaming ? Icons.cancel : Icons.record_voice_over,
                           size: 36,
@@ -1593,8 +1414,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _cameraController?.dispose();
-    _videoChunkTimer?.cancel();
     udpSocket?.close();
     _audioRecorder?.closeRecorder();
     _audioPlayer?.closePlayer();
@@ -1605,5 +1424,75 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
     _tcpServer?.close();
     super.dispose();
+  }
+
+  // Show file transfer progress dialog
+  void _showFileTransferProgressDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Expanded(
+              child: Text('Sending Video File', style: TextStyle(fontSize: 16)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _currentFileName,
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+              overflow: TextOverflow.ellipsis,
+            ),
+            SizedBox(height: 16),
+            LinearProgressIndicator(
+              value: _fileTransferProgress,
+              backgroundColor: Colors.grey[300],
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '${(_fileTransferProgress * 100).toStringAsFixed(1)}%',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+            ),
+          ],
+        ),
+        actions: [
+          if (_fileTransferProgress < 1.0)
+            TextButton(
+              onPressed: () {
+                // Option to cancel transfer
+                _isSendingFile = false;
+                Navigator.pop(context);
+              },
+              child: Text('Cancel'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Hide file transfer progress dialog
+  void _hideFileTransferProgressDialog() {
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  // Update file transfer progress
+  void _updateFileTransferProgress(double progress, String fileName) {
+    if (mounted) {
+      setState(() {
+        _fileTransferProgress = progress;
+        _currentFileName = fileName;
+      });
+    }
   }
 }
