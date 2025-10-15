@@ -528,14 +528,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
-  inject_js:
-    dependency: transitive
-    description:
-      name: inject_js
-      sha256: "849eacfd4b7e9182a7e743843a820d74bf1abcb692bdbe09e34ef0f753ad7227"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.1.0"
   intl:
     dependency: transitive
     description:
@@ -572,26 +564,26 @@ packages:
     dependency: transitive
     description:
       name: leak_tracker
-      sha256: "6bb818ecbdffe216e81182c2f0714a2e62b593f4a4f13098713ff1685dfb6ab0"
+      sha256: "33e2e26bdd85a0112ec15400c8cbffea70d0f9c3407491f672a2fad47915e2de"
       url: "https://pub.dev"
     source: hosted
-    version: "10.0.9"
+    version: "11.0.2"
   leak_tracker_flutter_testing:
     dependency: transitive
     description:
       name: leak_tracker_flutter_testing
-      sha256: f8b613e7e6a13ec79cfdc0e97638fddb3ab848452eff057653abd3edba760573
+      sha256: "1dbc140bb5a23c75ea9c4811222756104fbcd1a27173f0c34ca01e16bea473c1"
       url: "https://pub.dev"
     source: hosted
-    version: "3.0.9"
+    version: "3.0.10"
   leak_tracker_testing:
     dependency: transitive
     description:
       name: leak_tracker_testing
-      sha256: "6ba465d5d76e67ddf503e1161d1f4a6bc42306f9d66ca1e8f079a47290fb06d3"
+      sha256: "8d5a2d49f4a66b49744b23b018848400d23e54caf9463f4eb20df3eb8acb2eb1"
       url: "https://pub.dev"
     source: hosted
-    version: "3.0.1"
+    version: "3.0.2"
   lints:
     dependency: transitive
     description:
@@ -688,62 +680,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.2"
-  opus_dart:
-    dependency: "direct main"
-    description:
-      name: opus_dart
-      sha256: e8ab4774409997af33cbfdfe91a186854ed6458b2fec66b0e52f4434b1af2f7c
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.1"
-  opus_flutter:
-    dependency: "direct main"
-    description:
-      name: opus_flutter
-      sha256: "86edfdab1220d64bd7daa3e9bda1785cc0c8c793629e89f34a2a87bdfce57e25"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.3"
-  opus_flutter_android:
-    dependency: transitive
-    description:
-      name: opus_flutter_android
-      sha256: "9e5b71f5d959e1ee3b5faf7e1e893aabe7955d3a234c83f02462d801a5218497"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.1"
-  opus_flutter_ios:
-    dependency: transitive
-    description:
-      name: opus_flutter_ios
-      sha256: c999bbe8b8f1a4073fb62de6cc04ecd3ab3acdefa6b8d78b03c0dac9c81ef0fa
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.1"
-  opus_flutter_platform_interface:
-    dependency: transitive
-    description:
-      name: opus_flutter_platform_interface
-      sha256: "41180b74f1dacc131270d49815fd4eb46bd7cc5ad57aac84eab748d08de59138"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.0"
-  opus_flutter_web:
-    dependency: transitive
-    description:
-      name: opus_flutter_web
-      sha256: "037a4cdb27c3a1c05c85aed3dbe0a4b8c2f49ccce33cef259ef34f1815af6785"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.3"
-  opus_flutter_windows:
-    dependency: transitive
-    description:
-      name: opus_flutter_windows
-      sha256: "6a26862dd331c9c4b5e4c805efe3dd4e4a049e4a18bee230d994c25d72928a3b"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.0"
   package_config:
     dependency: transitive
     description:
@@ -1145,26 +1081,26 @@ packages:
     dependency: transitive
     description:
       name: test
-      sha256: "301b213cd241ca982e9ba50266bd3f5bd1ea33f1455554c5abb85d1be0e2d87e"
+      sha256: "65e29d831719be0591f7b3b1a32a3cda258ec98c58c7b25f7b84241bc31215bb"
       url: "https://pub.dev"
     source: hosted
-    version: "1.25.15"
+    version: "1.26.2"
   test_api:
     dependency: transitive
     description:
       name: test_api
-      sha256: fb31f383e2ee25fbbfe06b40fe21e1e458d14080e3c67e7ba0acfde4df4e0bbd
+      sha256: "522f00f556e73044315fa4585ec3270f1808a4b186c936e612cab0b565ff1e00"
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.4"
+    version: "0.7.6"
   test_core:
     dependency: transitive
     description:
       name: test_core
-      sha256: "84d17c3486c8dfdbe5e12a50c8ae176d15e2a771b96909a9442b40173649ccaa"
+      sha256: "80bf5a02b60af04b09e14f6fe68b921aad119493e26e490deaca5993fef1b05a"
       url: "https://pub.dev"
     source: hosted
-    version: "0.6.8"
+    version: "0.6.11"
   timeago:
     dependency: "direct main"
     description:
@@ -1265,10 +1201,10 @@ packages:
     dependency: transitive
     description:
       name: vector_math
-      sha256: "80b3257d1492ce4d091729e3a67a60407d227c27241d6927be0130c98e741803"
+      sha256: d530bd74fea330e6e364cda7a85019c434070188383e1cd8d9777ee586914c5b
       url: "https://pub.dev"
     source: hosted
-    version: "2.1.4"
+    version: "2.2.0"
   video_player:
     dependency: "direct main"
     description:
@@ -1341,14 +1277,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.1"
-  web_ffi:
-    dependency: transitive
-    description:
-      name: web_ffi
-      sha256: "48ef8037f7bc051d11b88d0f2903e02bec21092c51833d37c3361c36e3edc4f7"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.7.2"
   web_socket:
     dependency: transitive
     description:

@@ -1070,7 +1070,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       right: true,
       left: true,
       child: Scaffold(
-        // resizeToAvoidBottomInset :false,
+        resizeToAvoidBottomInset: false,
         extendBodyBehindAppBar: true,
         // appBar: AppBar(title: Text(''), automaticallyImplyLeading: false),
         body: Container(
