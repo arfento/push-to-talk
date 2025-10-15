@@ -26,8 +26,10 @@ class LobbyScreen extends StatefulWidget {
 }
 
 class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
-  // final VoiceService voiceService = VoiceService();
-  List<String> connectedUsers = []; // Stores connected IPs
+  // List<String> connectedUsers = []; // Stores connected IPs
+  final ValueNotifier<List<String>> _connectedUsersNotifier =
+      ValueNotifier<List<String>>([]); // Real-time connected users
+
   UDP? udpSocket;
   static const int discoveryPort = 5000;
   FlutterSoundRecorder? _audioRecorder;
@@ -53,19 +55,21 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   bool _isSendingFile = false;
   double _fileTransferProgress = 0.0;
   String _currentFileName = '';
+  StreamController<double>? _progressController; // Stream for progress updates
 
   //send & received message
   TextEditingController messageController = TextEditingController();
   List<String> messages = []; // Stores received messages
 
+  List<String> get connectedUsers => _connectedUsersNotifier.value;
+
   @override
   void initState() {
     super.initState();
-    // voiceService.init();
-    // voiceService.targetIp = widget.hostIp;
     getLocalIp();
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
+    _progressController = StreamController<double>.broadcast();
     _initAudio();
 
     if (widget.isHost) {
@@ -630,13 +634,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     print("🔵 [HOST] Listening for join requests on port 6002...");
 
     // Add the host itself to the list
-
     String hostIp = widget.hostIp;
-    if (!connectedUsers.contains(hostIp)) {
-      setState(() {
-        connectedUsers.add(hostIp);
-      });
-    }
+    _addUser(hostIp);
 
     udpSocket!.asStream().listen((datagram) async {
       if (datagram != null) {
@@ -660,11 +659,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         } else if (message == "JOIN") {
           print("✅ [HOST] Join request received from: $userIp");
 
-          if (!connectedUsers.contains(userIp)) {
-            setState(() {
-              connectedUsers.add(userIp);
-            });
-          }
+          _addUser(userIp);
           _broadcastUserList();
 
           // ✅ Send confirmation to new client
@@ -674,9 +669,29 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             Endpoint.unicast(InternetAddress(userIp), port: Port(6003)),
           );
           sender.close();
+        } else if (message == "LEAVE") {
+          print("🚪 [HOST] Leave request received from: $userIp");
+          _removeUser(userIp);
+          _broadcastUserList();
         }
       }
     });
+  }
+
+  void _addUser(String userIp) {
+    if (!connectedUsers.contains(userIp)) {
+      _connectedUsersNotifier.value = [...connectedUsers, userIp];
+      print("➕ [USERS] User added: $userIp, Total: ${connectedUsers.length}");
+    }
+  }
+
+  void _removeUser(String userIp) {
+    if (connectedUsers.contains(userIp)) {
+      _connectedUsersNotifier.value = connectedUsers
+          .where((ip) => ip != userIp)
+          .toList();
+      print("➖ [USERS] User removed: $userIp, Total: ${connectedUsers.length}");
+    }
   }
 
   void _sendJoinRequest() async {
@@ -735,9 +750,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             List<String> updatedUsers = receivedData.split(',');
             log("🔄 [CLIENT] Received updated user list: $updatedUsers");
 
-            setState(() {
-              connectedUsers = updatedUsers;
-            });
+            _connectedUsersNotifier.value = updatedUsers;
           }
 
           log("🔄 [CLIENT] State updated with: $connectedUsers");
@@ -764,10 +777,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       );
       sender.close();
     }
-
-    // setState(() {
-    //   messages.add("You: $message"); // Show sent message in chat
-    // });
 
     messageController.clear();
   }
@@ -915,15 +924,29 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       _currentFileName = videoFile.name;
     });
 
-    // Show progress dialog
     _showFileTransferProgressDialog();
+
+    Timer? progressTimer;
+    int totalBytes = 0;
+    int bytesSent = 0;
 
     try {
       Uint8List videoData = await videoFile.readAsBytes();
+      totalBytes = videoData.length;
       String fileName = 'video_${DateTime.now().millisecondsSinceEpoch}.mp4';
-      log('sendvideo _listenForVideoStream _sendVideoFileOverTCP $fileName');
 
-      // Create header: [fileSize:4bytes][fileNameLength:4bytes][fileName]
+      // Start progress timer (updates every 100ms for smooth animation)
+      progressTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+        if (bytesSent >= totalBytes) {
+          timer.cancel();
+          _progressController?.add(1.0);
+        } else {
+          double progress = bytesSent / totalBytes;
+          _progressController?.add(progress);
+        }
+      });
+
+      // Create header
       Uint8List fileNameBytes = Uint8List.fromList(fileName.codeUnits);
       Uint8List header = Uint8List(8 + fileNameBytes.length);
       ByteData headerData = ByteData.view(header.buffer);
@@ -931,48 +954,29 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       headerData.setUint32(4, fileNameBytes.length, Endian.big);
       header.setRange(8, 8 + fileNameBytes.length, fileNameBytes);
 
-      // Send header + file data
       List<Socket> clients = List.from(_tcpClients);
-      int totalClients = clients.length;
       int successfulSends = 0;
 
-      for (int i = 0; i < clients.length; i++) {
-        Socket client = clients[i];
+      for (Socket client in clients) {
         try {
-          // Simple check - try to get the remote address
-          await client.remoteAddress;
+          client.remoteAddress; // Connection check
 
-          // Update progress for client connection
-          _updateFileTransferProgress(
-            (i / totalClients) * 0.1, // 10% for connections
-            'Connecting to client ${i + 1}/$totalClients',
-          );
-
+          // Send header and entire file data at once for maximum speed
           client.add(header);
           client.add(videoData);
           await client.flush();
 
+          bytesSent = totalBytes; // Mark as complete for this client
           successfulSends++;
-          log("sendvideo 📤 [TCP] Video file sent to client: $fileName");
 
-          // Update progress for successful send
-          _updateFileTransferProgress(
-            0.1 +
-                (successfulSends / totalClients) *
-                    0.9, // Remaining 90% for data transfer
-            'Sent to $successfulSends/$totalClients clients',
-          );
+          log("sendvideo 📤 [TCP] Video file sent to client: $fileName");
         } catch (e) {
           log("sendvideo ❌ [TCP] Client error, removing: $e");
           _tcpClients.remove(client);
         }
       }
-      // Final progress update
-      _updateFileTransferProgress(1.0, 'Transfer completed');
 
-      await Future.delayed(
-        Duration(milliseconds: 500),
-      ); // Show completion briefly
+      await Future.delayed(Duration(milliseconds: 500)); // Show completion
 
       log(
         "sendvideo 📤 [TCP] Video file sent: $fileName (${videoData.length} bytes) to $successfulSends clients",
@@ -997,6 +1001,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         );
       }
     } finally {
+      progressTimer?.cancel();
       setState(() {
         _isSendingFile = false;
       });
@@ -1083,67 +1088,85 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                 "Connected Users",
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
-              if (connectedUsers.isEmpty)
-                Padding(
-                  padding: EdgeInsets.all(8.0),
-                  child: Text(
-                    "No users connected yet",
-                    style: TextStyle(
-                      color: Colors.grey,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                )
-              else
-                Column(
-                  children: connectedUsers.map((ip) {
-                    bool isHost = ip == widget.hostIp;
-                    bool isMe = ip == _myIpAddress;
-
-                    String displayText;
-                    if (isHost && isMe) {
-                      displayText = "You";
-                    } else if (isHost) {
-                      displayText = "Host";
-                    } else if (isMe) {
-                      displayText = "You";
-                    } else {
-                      displayText = "User";
-                    }
-
-                    return Container(
-                      margin: EdgeInsets.symmetric(vertical: 4, horizontal: 16),
-                      padding: EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.grey.shade300,
-                          width: 1,
+              ValueListenableBuilder<List<String>>(
+                valueListenable: _connectedUsersNotifier,
+                builder: (context, users, child) {
+                  if (users.isEmpty) {
+                    return Padding(
+                      padding: EdgeInsets.all(8.0),
+                      child: Text(
+                        "No users connected yet",
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w400,
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            isHost ? Icons.cell_tower : Icons.person,
-                            color: isHost ? Colors.blueGrey : Colors.blueGrey,
-                            size: 20,
+                    );
+                  } else {
+                    return Column(
+                      children: users.map((ip) {
+                        bool isHost = ip == widget.hostIp;
+                        bool isMe = ip == _myIpAddress;
+
+                        String displayText;
+                        if (isHost && isMe) {
+                          displayText = "You (Host)";
+                        } else if (isHost) {
+                          displayText = "Host";
+                        } else if (isMe) {
+                          displayText = "You";
+                        } else {
+                          displayText = "User";
+                        }
+
+                        return Container(
+                          margin: EdgeInsets.symmetric(
+                            vertical: 4,
+                            horizontal: 16,
                           ),
-                          SizedBox(width: 8),
-                          Text(
-                            "$displayText: $ip",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                              color: Colors.black87,
+                          padding: EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.grey.shade300,
+                              width: 1,
                             ),
                           ),
-                        ],
-                      ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                isHost ? Icons.cell_tower : Icons.person,
+                                color: isHost ? Colors.blue : Colors.green,
+                                size: 20,
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                "$displayText: $ip",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              if (isMe)
+                                Padding(
+                                  padding: EdgeInsets.only(left: 8),
+                                  child: Icon(
+                                    Icons.circle,
+                                    color: Colors.green,
+                                    size: 8,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
                     );
-                  }).toList(),
-                ),
+                  }
+                },
+              ),
 
               // SizedBox(height: 0),
               // Text("Chat Messages",
@@ -1418,6 +1441,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _audioRecorder?.closeRecorder();
     _audioPlayer?.closePlayer();
     _audioStreamController?.close();
+    _progressController?.close();
+    _connectedUsersNotifier.dispose();
 
     for (Socket client in _tcpClients) {
       client.destroy();
@@ -1431,50 +1456,73 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 16),
-            Expanded(
-              child: Text('Sending Video File', style: TextStyle(fontSize: 16)),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _currentFileName,
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-              overflow: TextOverflow.ellipsis,
-            ),
-            SizedBox(height: 16),
-            LinearProgressIndicator(
-              value: _fileTransferProgress,
-              backgroundColor: Colors.grey[300],
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-            ),
-            SizedBox(height: 8),
-            Text(
-              '${(_fileTransferProgress * 100).toStringAsFixed(1)}%',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-          ],
-        ),
-        actions: [
-          if (_fileTransferProgress < 1.0)
-            TextButton(
-              onPressed: () {
-                // Option to cancel transfer
-                _isSendingFile = false;
-                Navigator.pop(context);
-              },
-              child: Text('Cancel'),
-            ),
-        ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          return StreamBuilder<double>(
+            stream: _progressController?.stream,
+            builder: (context, snapshot) {
+              double progress = snapshot.data ?? _fileTransferProgress;
+
+              return AlertDialog(
+                title: Row(
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        'Sending Video File',
+                        style: TextStyle(fontSize: 16),
+                      ),
+                    ),
+                  ],
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _currentFileName,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    SizedBox(height: 16),
+                    LinearProgressIndicator(
+                      value: progress,
+                      backgroundColor: Colors.grey[300],
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      '${(progress * 100).toStringAsFixed(1)}%',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      'Sending to ${_tcpClients.length} client(s)',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+                    ),
+                  ],
+                ),
+                actions: [
+                  if (progress < 1.0)
+                    TextButton(
+                      onPressed: () {
+                        // Option to cancel transfer
+                        _isSendingFile = false;
+                        Navigator.pop(context);
+                      },
+                      child: Text('Cancel'),
+                    ),
+                ],
+              );
+            },
+          );
+        },
       ),
     );
   }
@@ -1483,16 +1531,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   void _hideFileTransferProgressDialog() {
     if (mounted) {
       Navigator.of(context, rootNavigator: true).pop();
-    }
-  }
-
-  // Update file transfer progress
-  void _updateFileTransferProgress(double progress, String fileName) {
-    if (mounted) {
-      setState(() {
-        _fileTransferProgress = progress;
-        _currentFileName = fileName;
-      });
     }
   }
 }
