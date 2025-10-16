@@ -17,6 +17,8 @@ class UdpHomeScreen extends StatefulWidget {
 
 class _UdpHomeScreenState extends State<UdpHomeScreen> {
   final NetworkService networkService = NetworkService();
+  bool _isCreatingLobby = false;
+  bool _isJoiningLobby = false;
 
   @override
   void initState() {
@@ -42,8 +44,6 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Spacer(),
-              //  Logo or Icon
               Icon(
                 LucideIcons.radio, // Use a walkie-talkie style icon
                 size: 100,
@@ -66,18 +66,8 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
                 context,
                 icon: LucideIcons.plusCircle,
                 label: 'Create Lobby',
-                onTap: () async {
-                  String hostIp = await networkService.startHosting();
-                  if (mounted) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) =>
-                            LobbyScreen(isHost: true, hostIp: hostIp),
-                      ),
-                    );
-                  }
-                },
+                isLoading: _isCreatingLobby,
+                onTap: _createLobby,
               ),
 
               const SizedBox(height: 20),
@@ -87,54 +77,9 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
                 context,
                 icon: LucideIcons.radioTower,
                 label: 'Join Lobby',
-                onTap: () async {
-                  _showLoadingDialog(context); // Show loading dialog
-
-                  String? hostAddress = await networkService.findHost();
-
-                  // Dismiss loading dialog
-                  if (mounted) {
-                    Navigator.pop(context);
-                  }
-
-                  if (hostAddress != null && mounted) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) =>
-                            LobbyScreen(isHost: false, hostIp: hostAddress),
-                      ),
-                    );
-                  } else if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("No lobbies found.")),
-                    );
-                  }
-                },
+                isLoading: _isJoiningLobby,
+                onTap: _joinLobby,
               ),
-
-              const Spacer(),
-
-              // _buildButton(
-              //   context,
-              //   icon: LucideIcons.radioTower,
-              //   label: 'Stream Example',
-              //   onTap: () async {
-              //     Navigator.push(
-              //       context,
-              //       MaterialPageRoute(builder: (context) => StreamsExample()),
-              //     );
-              //   },
-              // ),
-
-              // // Bottom Tagline
-              // Padding(
-              //   padding: const EdgeInsets.only(bottom: 20),
-              //   child: Text(
-              //     'Stay in sync with your crew 😎',
-              //     style: TextStyle(fontSize: 16, color: Colors.white70),
-              //   ),
-              // ),
             ],
           ),
         ),
@@ -142,21 +87,91 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
     );
   }
 
+  Future<void> _createLobby() async {
+    if (_isCreatingLobby) return;
+
+    setState(() => _isCreatingLobby = true);
+
+    try {
+      String hostIp = await networkService.startHosting();
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => LobbyScreen(isHost: true, hostIp: hostIp),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Failed to create lobby: $e")));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCreatingLobby = false);
+      }
+    }
+  }
+
+  Future<void> _joinLobby() async {
+    if (_isJoiningLobby) return;
+
+    setState(() => _isJoiningLobby = true);
+    _showLoadingDialog(context);
+
+    try {
+      String? hostAddress = await networkService.findHost();
+
+      if (mounted) {
+        Navigator.pop(context); // Close loading dialog
+
+        if (hostAddress != null) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) =>
+                  LobbyScreen(isHost: false, hostIp: hostAddress),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("No lobbies found.")));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Failed to join lobby: $e")));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isJoiningLobby = false);
+      }
+    }
+  }
+
   // Custom Button Widget
+  // Updated button with loading state
   Widget _buildButton(
     BuildContext context, {
     required IconData icon,
     required String label,
     required VoidCallback? onTap,
+    bool isLoading = false,
   }) {
     return InkWell(
-      onTap: onTap,
+      onTap: isLoading ? null : onTap,
       borderRadius: BorderRadius.circular(16),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(vertical: 18),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.15),
+          color: Colors.white.withOpacity(isLoading ? 0.1 : 0.15),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.white.withOpacity(0.3)),
           boxShadow: [
@@ -170,10 +185,20 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: Colors.white, size: 24),
+            if (isLoading)
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              )
+            else
+              Icon(icon, color: Colors.white, size: 24),
             const SizedBox(width: 10),
             Text(
-              label,
+              isLoading ? "Please wait..." : label,
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -190,11 +215,10 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
   void _showLoadingDialog(BuildContext context) {
     showDialog(
       context: context,
-      barrierDismissible: false, // Prevent closing by tapping outside
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return Stack(
           children: [
-            // Blurred background
             BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 3, sigmaY: 3),
               child: Container(color: Colors.black.withOpacity(0.2)),
@@ -203,7 +227,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
               child: Container(
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  color: Colors.transparent,
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
                   boxShadow: [
                     BoxShadow(
@@ -216,9 +240,9 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const CircularProgressIndicator(color: Color(0xFF11E0DC)),
+                    CircularProgressIndicator(color: Color(0xFF11E0DC)),
                     const SizedBox(height: 16),
-                    const Text(
+                    Text(
                       "Searching for lobbies...",
                       style: TextStyle(
                         fontSize: 16,

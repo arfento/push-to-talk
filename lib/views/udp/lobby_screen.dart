@@ -14,7 +14,7 @@ import 'package:push_to_talk_app/views/video_stream/widgets/video_path_dialog.da
 import 'package:udp/udp.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 
-class LobbyScreen extends StatefulWidget {
+class LobbyScreen extends StatefulWidget with WidgetsBindingObserver {
   static const String id = 'lobby_screen';
   final bool isHost;
   final String hostIp; // Host's IP
@@ -63,9 +63,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   List<String> get connectedUsers => _connectedUsersNotifier.value;
 
+  bool _isDisposed = false;
+  Timer? _keepAliveTimer;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     getLocalIp();
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
@@ -74,9 +79,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
     if (widget.isHost) {
       _startReceivingRequests();
+      _startKeepAliveBroadcast();
     } else {
       _sendJoinRequest();
+      _startKeepAliveListener();
     }
+
     _listenForUpdates();
     _listenForMessages();
     _listenForAudio();
@@ -105,6 +113,125 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       }
     }
     return null;
+  }
+
+  // Add keep-alive mechanism
+  void _startKeepAliveBroadcast() {
+    _keepAliveTimer = Timer.periodic(Duration(seconds: 5), (timer) async {
+      if (_isDisposed) {
+        timer.cancel();
+        return;
+      }
+
+      for (String ip in connectedUsers) {
+        if (ip != _myIpAddress) {
+          try {
+            UDP sender = await UDP.bind(Endpoint.any());
+            await sender.send(
+              Uint8List.fromList("KEEP_ALIVE".codeUnits),
+              Endpoint.unicast(InternetAddress(ip), port: Port(6009)),
+            );
+            sender.close();
+          } catch (e) {
+            print("❌ Error sending keep-alive to $ip: $e");
+          }
+        }
+      }
+    });
+  }
+
+  void _startKeepAliveListener() async {
+    UDP receiver = await UDP.bind(Endpoint.any(port: Port(6009)));
+
+    receiver.asStream().listen((datagram) {
+      if (datagram != null) {
+        String message = String.fromCharCodes(datagram.data);
+        if (message == "KEEP_ALIVE") {
+          // Host is still alive, do nothing
+        }
+      }
+    });
+
+    // Also set up a timer to check if host is still responsive
+    Timer.periodic(Duration(seconds: 15), (timer) async {
+      if (_isDisposed || widget.isHost) {
+        timer.cancel();
+        return;
+      }
+
+      // Send ping to host
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("PING".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6010)),
+        );
+        sender.close();
+      } catch (e) {
+        print("❌ Host seems to be offline: $e");
+        _handleHostDisconnected();
+      }
+    });
+  }
+
+  void _handleHostDisconnected() {
+    if (_isDisposed) return;
+
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: Text("Host Disconnected"),
+          content: Text(
+            "The host has left the lobby. You will be returned to the main screen.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.popUntil(context, (route) => route.isFirst);
+              },
+              child: Text("OK"),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  // Enhanced leave handling
+  Future<void> _cleanupAndLeave() async {
+    if (_isDisposed) return;
+
+    _isDisposed = true;
+
+    // Send leave notification
+    if (!widget.isHost && widget.hostIp.isNotEmpty) {
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("LEAVE".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+        );
+        sender.close();
+      } catch (e) {
+        print("❌ Error sending leave message: $e");
+      }
+    }
+
+    // Cleanup resources
+    _keepAliveTimer?.cancel();
+    udpSocket?.close();
+    await _audioRecorder?.closeRecorder();
+    await _audioPlayer?.closePlayer();
+    _audioStreamController?.close();
+    _progressController?.close();
+
+    // Close TCP connections
+    for (Socket client in _tcpClients) {
+      client.destroy();
+    }
+    await _tcpServer?.close();
   }
 
   Future<void> _initAudio() async {
@@ -673,6 +800,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
           print("🚪 [HOST] Leave request received from: $userIp");
           _removeUser(userIp);
           _broadcastUserList();
+        } else if (message == "PING") {
+          // Respond to ping from clients
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            Uint8List.fromList("PONG".codeUnits),
+            Endpoint.unicast(InternetAddress(userIp), port: Port(6010)),
+          );
+          sender.close();
         }
       }
     });
@@ -742,6 +877,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       (datagram) {
         if (datagram != null && datagram.data.isNotEmpty) {
           String receivedData = String.fromCharCodes(datagram.data);
+
+          if (receivedData == "HOST_LEAVING") {
+            _handleHostDisconnected();
+            return;
+          }
+
           List<String> updatedUsers = receivedData.split(',');
           log("receivedData $receivedData");
 
@@ -1064,390 +1205,662 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      bottom: true,
-      top: true,
-      right: true,
-      left: true,
-      child: Scaffold(
-        resizeToAvoidBottomInset: false,
-        extendBodyBehindAppBar: true,
-        // appBar: AppBar(title: Text(''), automaticallyImplyLeading: false),
-        body: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFFFF6767), Color(0xFF11E0DC)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-          child: Column(
-            children: [
-              SizedBox(height: kToolbarHeight),
-              Text(
-                "Connected Users",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              ValueListenableBuilder<List<String>>(
-                valueListenable: _connectedUsersNotifier,
-                builder: (context, users, child) {
-                  if (users.isEmpty) {
-                    return Padding(
-                      padding: EdgeInsets.all(8.0),
-                      child: Text(
-                        "No users connected yet",
-                        style: TextStyle(
-                          color: Colors.grey,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w400,
+    return PopScope(
+      canPop: false, // disable default pop until we handle it manually
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return; // already popped by Navigator
+
+        if (widget.isHost) {
+          // Show confirmation dialog for host
+          final shouldExit =
+              await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text("Exit Lobby?"),
+                  content: const Text(
+                    "You are the host. If you leave, all clients will be disconnected. Are you sure?",
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: const Text("Cancel"),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(true),
+                      child: const Text("Exit"),
+                    ),
+                  ],
+                ),
+              ) ??
+              false;
+
+          if (shouldExit) {
+            // Notify all clients that host is leaving
+            for (String ip in connectedUsers) {
+              if (ip != _myIpAddress) {
+                try {
+                  final sender = await UDP.bind(Endpoint.any());
+                  await sender.send(
+                    Uint8List.fromList("HOST_LEAVING".codeUnits),
+                    Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
+                  );
+                  sender.close();
+                } catch (e) {
+                  print("❌ Error notifying client $ip: $e");
+                }
+              }
+            }
+
+            await _cleanupAndLeave();
+            if (context.mounted) Navigator.of(context).pop(result);
+          }
+        } else {
+          // Client can leave directly
+          await _cleanupAndLeave();
+          if (context.mounted) Navigator.of(context).pop(result);
+        }
+      },
+      child: SafeArea(
+        bottom: true,
+        top: true,
+        right: true,
+        left: true,
+        child: Scaffold(
+          extendBodyBehindAppBar: true,
+          body: SingleChildScrollView(
+            child: GestureDetector(
+              onTap: () {
+                FocusManager.instance.primaryFocus?.unfocus();
+              },
+
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFFFF6767), Color(0xFF11E0DC)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                ),
+                child: SizedBox(
+                  height: MediaQuery.of(context).size.height,
+                  width: MediaQuery.of(context).size.width,
+                  child: Column(
+                    children: [
+                      // Header Section
+                      Padding(
+                        padding: EdgeInsets.symmetric(
+                          vertical: 12,
+                          horizontal: 8,
+                        ),
+                        child: Column(
+                          children: [
+                            Text(
+                              "Connected Users",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SizedBox(height: 8),
+                            ValueListenableBuilder<List<String>>(
+                              valueListenable: _connectedUsersNotifier,
+                              builder: (context, users, child) {
+                                if (users.isEmpty) {
+                                  return Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "No users connected yet",
+                                      style: TextStyle(
+                                        color: Colors.grey,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w400,
+                                      ),
+                                    ),
+                                  );
+                                } else {
+                                  return ListView.builder(
+                                    shrinkWrap: true,
+                                    physics: AlwaysScrollableScrollPhysics(),
+                                    itemCount: users.length,
+                                    itemBuilder: (context, index) {
+                                      String ip = users[index];
+                                      bool isHost = ip == widget.hostIp;
+                                      bool isMe = ip == _myIpAddress;
+
+                                      String displayText;
+                                      if (isHost && isMe) {
+                                        displayText = "You (Host)";
+                                      } else if (isHost) {
+                                        displayText = "Host";
+                                      } else if (isMe) {
+                                        displayText = "You";
+                                      } else {
+                                        displayText = "User";
+                                      }
+
+                                      return Container(
+                                        margin: EdgeInsets.symmetric(
+                                          vertical: 4,
+                                          horizontal: 8,
+                                        ),
+                                        padding: EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey.shade100,
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.grey.shade300,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              isHost
+                                                  ? Icons.cell_tower
+                                                  : Icons.person,
+                                              color: isHost
+                                                  ? Colors.blue
+                                                  : Colors.green,
+                                              size: 20,
+                                            ),
+                                            SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                "$displayText: $ip",
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w500,
+                                                  color: Colors.black87,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            if (isMe)
+                                              Padding(
+                                                padding: EdgeInsets.only(
+                                                  left: 8,
+                                                ),
+                                                child: Icon(
+                                                  Icons.circle,
+                                                  color: Colors.green,
+                                                  size: 8,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  );
+                                }
+                              },
+                            ),
+                          ],
                         ),
                       ),
-                    );
-                  } else {
-                    return Column(
-                      children: users.map((ip) {
-                        bool isHost = ip == widget.hostIp;
-                        bool isMe = ip == _myIpAddress;
 
-                        String displayText;
-                        if (isHost && isMe) {
-                          displayText = "You (Host)";
-                        } else if (isHost) {
-                          displayText = "Host";
-                        } else if (isMe) {
-                          displayText = "You";
-                        } else {
-                          displayText = "User";
-                        }
-
-                        return Container(
-                          margin: EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 16,
-                          ),
-                          padding: EdgeInsets.all(12),
+                      // Messages Section - Expandable
+                      Expanded(
+                        child: Container(
+                          margin: EdgeInsets.symmetric(horizontal: 10),
                           decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.grey.shade300,
-                              width: 1,
+                            color: Colors.grey[200],
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(15),
+                              topRight: Radius.circular(15),
                             ),
+                          ),
+                          child: Column(
+                            children: [
+                              // Messages Header
+                              Container(
+                                padding: EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[300],
+                                  borderRadius: BorderRadius.only(
+                                    topLeft: Radius.circular(15),
+                                    topRight: Radius.circular(15),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.chat,
+                                      size: 20,
+                                      color: Colors.blueGrey,
+                                    ),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      "Chat Messages",
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.blueGrey,
+                                      ),
+                                    ),
+                                    Spacer(),
+                                    Text(
+                                      "(${messages.length})",
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.grey[600],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              // Messages List
+                              Expanded(
+                                child: messages.isEmpty
+                                    ? Center(
+                                        child: Column(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Icon(
+                                              Icons.chat_bubble_outline,
+                                              size: 60,
+                                              color: Colors.grey,
+                                            ),
+                                            SizedBox(height: 8),
+                                            Text(
+                                              "No messages yet",
+                                              style: TextStyle(
+                                                color: Colors.grey,
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                            Text(
+                                              "Start a conversation!",
+                                              style: TextStyle(
+                                                color: Colors.grey,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      )
+                                    : Padding(
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                        ),
+                                        child: ListView.builder(
+                                          reverse: false,
+                                          shrinkWrap: true,
+                                          physics:
+                                              AlwaysScrollableScrollPhysics(),
+                                          itemCount: messages.length,
+                                          itemBuilder: (context, index) {
+                                            bool isMyMessage = messages[index]
+                                                .startsWith("You:");
+                                            return Container(
+                                              margin: EdgeInsets.symmetric(
+                                                vertical: 4,
+                                              ),
+                                              padding: EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                color: isMyMessage
+                                                    ? Colors.blue[50]
+                                                    : Colors.white,
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                border: Border.all(
+                                                  color: isMyMessage
+                                                      ? Colors.blue[100]!
+                                                      : Colors.grey[300]!,
+                                                  width: 1,
+                                                ),
+                                              ),
+                                              child: Row(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  if (!isMyMessage)
+                                                    Icon(
+                                                      Icons.person,
+                                                      size: 16,
+                                                      color: Colors.grey,
+                                                    ),
+                                                  if (!isMyMessage)
+                                                    SizedBox(width: 6),
+                                                  Expanded(
+                                                    child: Text(
+                                                      messages[index],
+                                                      style: TextStyle(
+                                                        fontSize: 14,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      // Input Section
+                      Container(
+                        color: Colors.transparent,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.grey[100],
+                            borderRadius: BorderRadius.circular(25),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 8,
+                                offset: Offset(0, 2),
+                              ),
+                            ],
                           ),
                           child: Row(
                             children: [
-                              Icon(
-                                isHost ? Icons.cell_tower : Icons.person,
-                                color: isHost ? Colors.blue : Colors.green,
-                                size: 20,
-                              ),
-                              SizedBox(width: 8),
-                              Text(
-                                "$displayText: $ip",
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.black87,
-                                ),
-                              ),
-                              if (isMe)
-                                Padding(
-                                  padding: EdgeInsets.only(left: 8),
-                                  child: Icon(
-                                    Icons.circle,
-                                    color: Colors.green,
-                                    size: 8,
+                              Expanded(
+                                child: TextField(
+                                  controller: messageController,
+                                  decoration: InputDecoration(
+                                    hintText: "Type a message...",
+                                    border: InputBorder.none,
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 14,
+                                    ),
                                   ),
+                                  maxLines: 3,
+                                  minLines: 1,
                                 ),
+                              ),
+                              Container(
+                                margin: EdgeInsets.only(right: 8),
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.blueAccent,
+                                ),
+                                child: IconButton(
+                                  onPressed: () =>
+                                      _sendMessage(messageController.text),
+                                  icon: Icon(Icons.send, color: Colors.white),
+                                  splashRadius: 20,
+                                ),
+                              ),
                             ],
                           ),
-                        );
-                      }).toList(),
-                    );
-                  }
-                },
-              ),
-
-              // SizedBox(height: 0),
-              // Text("Chat Messages",
-              //     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              Expanded(
-                child: Container(
-                  margin: EdgeInsets.all(10),
-                  padding: EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[200],
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: messages.isEmpty
-                      ? Center(
-                          child: Text(
-                            "No messages yet",
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                        )
-                      : ListView.builder(
-                          itemCount: messages.length,
-                          itemBuilder: (context, index) {
-                            return Container(
-                              margin: EdgeInsets.symmetric(vertical: 5),
-                              padding: EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: messages[index].startsWith("You:")
-                                    ? Colors.green[100] // Sent message
-                                    : Colors.white, // Received message
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                "${messages[index]}",
-                                style: TextStyle(fontSize: 14),
-                              ),
-                            );
-                          },
                         ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(30),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 8,
-                        offset: Offset(0, 2),
                       ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: messageController,
-                          decoration: InputDecoration(
-                            hintText: "Type a message...",
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 14,
-                            ),
+
+                      // Controls Section
+                      Container(
+                        padding: EdgeInsets.symmetric(
+                          vertical: 12,
+                          horizontal: 16,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[300],
+                          borderRadius: BorderRadius.only(
+                            topLeft: Radius.circular(20),
+                            topRight: Radius.circular(20),
                           ),
                         ),
-                      ),
-                      IconButton(
-                        onPressed: () => _sendMessage(messageController.text),
-                        icon: Icon(Icons.send, color: Colors.blueAccent),
-                        splashRadius: 24,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Text(
-                    "Video Recording",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      // list _listAllVideos
-                      IconButton(
-                        onPressed: _listAllVideos,
-                        icon: Icon(
-                          Icons.file_download_rounded,
-                          size: 36,
-                          color: Colors.blueAccent,
-                        ),
-                        tooltip: 'List file recording',
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.grey[200],
-                          padding: EdgeInsets.all(12),
-                          shape: CircleBorder(),
-                          shadowColor: Colors.black.withOpacity(0.2),
-                          elevation: 4,
-                        ),
-                      ),
-                      SizedBox(width: 16),
-
-                      // Video Recording Button
-                      IconButton(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => BlocProvider(
-                                create: (context) {
-                                  return CameraBloc(
-                                    cameraUtils: CameraUtils(),
-                                    permissionUtils: PermissionUtils(),
-                                  )..add(
-                                    const CameraInitialize(recordingLimit: 15),
-                                  );
-                                },
-                                child: CameraPage(
-                                  onVideoRecorded: (String videoPath) async {
-                                    // Handle the recorded video path here
-                                    print(
-                                      'sendvideo Video recorded at: $videoPath',
-                                    );
-
-                                    // Create XFile from path
-                                    XFile xFile = XFile(videoPath);
-                                    await _sendVideoFileOverTCP(xFile);
-
-                                    // You can navigate to another screen, upload the video, etc.
-                                  },
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            // Video Recording Section
+                            Column(
+                              children: [
+                                Text(
+                                  "Video Recording",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
                                 ),
-                              ),
+                                SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    // List Videos Button
+                                    _buildControlButton(
+                                      icon: Icons.video_library,
+                                      label: "Videos",
+                                      onPressed: _listAllVideos,
+                                      color: Colors.blue,
+                                    ),
+                                    SizedBox(width: 16),
+                                    // Record Video Button
+                                    _buildControlButton(
+                                      icon: Icons.videocam,
+                                      label: "Record",
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute(
+                                            builder: (context) => BlocProvider(
+                                              create: (context) {
+                                                return CameraBloc(
+                                                  cameraUtils: CameraUtils(),
+                                                  permissionUtils:
+                                                      PermissionUtils(),
+                                                )..add(
+                                                  const CameraInitialize(
+                                                    recordingLimit: 15,
+                                                  ),
+                                                );
+                                              },
+                                              child: CameraPage(
+                                                onVideoRecorded:
+                                                    (String videoPath) async {
+                                                      print(
+                                                        'sendvideo Video recorded at: $videoPath',
+                                                      );
+                                                      XFile xFile = XFile(
+                                                        videoPath,
+                                                      );
+                                                      await _sendVideoFileOverTCP(
+                                                        xFile,
+                                                      );
+                                                    },
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                      color: Colors.red,
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
-                          );
-                        },
-                        icon: Icon(
-                          Icons.videocam,
-                          size: 36,
-                          color: Colors.blueAccent,
-                        ),
-                        tooltip: 'Record Video',
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.grey[200],
-                          padding: EdgeInsets.all(12),
-                          shape: CircleBorder(),
-                          shadowColor: Colors.black.withOpacity(0.2),
-                          elevation: 4,
+
+                            SizedBox(height: 16),
+
+                            // Voice Controls Section
+                            Column(
+                              children: [
+                                Text(
+                                  "Voice Message",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    // Recording Button
+                                    _buildControlButton(
+                                      icon: _isRecording
+                                          ? Icons.stop
+                                          : Icons.mic,
+                                      label: _isRecording ? "Stop" : "Record",
+                                      onPressed: () async {
+                                        if (_isRecording) {
+                                          _stopRecording();
+                                        } else {
+                                          if (await PermissionUtils()
+                                              .getCameraAndMicrophonePermissionStatus()) {
+                                            _startRecording();
+                                          } else {
+                                            if (await PermissionUtils()
+                                                .askForPermission()) {
+                                              _startRecording();
+                                            } else {
+                                              log("Permission is denied");
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Microphone permission required',
+                                                  ),
+                                                  backgroundColor: Colors.red,
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        }
+                                      },
+                                      color: _isRecording
+                                          ? Colors.red
+                                          : Colors.blue,
+                                      isActive: _isRecording,
+                                    ),
+                                    SizedBox(width: 16),
+                                    // Push-to-Talk Button
+                                    _buildControlButton(
+                                      icon: _isStreaming
+                                          ? Icons.cancel
+                                          : Icons.record_voice_over,
+                                      label: _isStreaming ? "Stop" : "Talk",
+                                      onPressed: () async {
+                                        if (_isStreaming) {
+                                          _stopStreaming();
+                                        } else {
+                                          if (await PermissionUtils()
+                                              .getCameraAndMicrophonePermissionStatus()) {
+                                            _startStreaming();
+                                          } else {
+                                            if (await PermissionUtils()
+                                                .askForPermission()) {
+                                              _startStreaming();
+                                            } else {
+                                              log("Permission is denied");
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Microphone permission required',
+                                                  ),
+                                                  backgroundColor: Colors.red,
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        }
+                                      },
+                                      color: _isStreaming
+                                          ? Colors.orange
+                                          : Colors.green,
+                                      isActive: _isStreaming,
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                  Text(
-                    "Voice Message",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      // Recording Button
-                      IconButton(
-                        onPressed: () async {
-                          if (_isRecording) {
-                            _stopRecording();
-                          } else {
-                            if (await PermissionUtils()
-                                .getCameraAndMicrophonePermissionStatus()) {
-                              _startRecording();
-                            } else {
-                              if (await PermissionUtils().askForPermission()) {
-                                _startRecording();
-                              } else {
-                                log("Permission is denied");
-                                return Future.error(
-                                  "Permission is denied",
-                                ); // Throw the specific error type for permission denial
-                              }
-                            }
-                          }
-                        },
-                        icon: Icon(
-                          _isRecording ? Icons.stop_circle : Icons.mic,
-                          size: 36,
-                          color: _isRecording
-                              ? Colors.redAccent
-                              : Colors.blueAccent,
-                        ),
-                        tooltip: _isRecording
-                            ? 'Stop Recording'
-                            : 'Start Recording',
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.grey[200],
-                          padding: EdgeInsets.all(12),
-                          shape: CircleBorder(),
-                          shadowColor: Colors.black.withOpacity(0.2),
-                          elevation: 4,
-                        ),
-                      ),
-                      SizedBox(width: 16),
-
-                      // Push-to-Talk Button
-                      IconButton(
-                        onPressed: () async {
-                          if (_isStreaming) {
-                            _stopStreaming();
-                          } else {
-                            if (await PermissionUtils()
-                                .getCameraAndMicrophonePermissionStatus()) {
-                              _startStreaming();
-                            } else {
-                              if (await PermissionUtils().askForPermission()) {
-                                _startStreaming();
-                              } else {
-                                log("Permission is denied");
-                                return Future.error(
-                                  "Permission is denied",
-                                ); // Throw the specific error type for permission denial
-                              }
-                            }
-                          }
-                        },
-
-                        icon: Icon(
-                          _isStreaming ? Icons.cancel : Icons.record_voice_over,
-                          size: 36,
-                          color: _isStreaming
-                              ? Colors.orangeAccent
-                              : Colors.greenAccent,
-                        ),
-                        tooltip: _isStreaming ? 'Stop Talking' : 'Push to Talk',
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.grey[200],
-                          padding: EdgeInsets.all(12),
-                          shape: CircleBorder(),
-                          shadowColor: Colors.black.withOpacity(0.2),
-                          elevation: 4,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
-
-              SizedBox(height: kToolbarHeight),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
 
+  // Helper method to build control buttons
+  Widget _buildControlButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+    required Color color,
+    bool isActive = false,
+  }) {
+    return Column(
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isActive ? color.withOpacity(0.2) : Colors.grey[200],
+            border: Border.all(
+              color: isActive ? color : Colors.transparent,
+              width: 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 6,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: IconButton(
+            onPressed: onPressed,
+            icon: Icon(icon, size: 28, color: color),
+            tooltip: label,
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.transparent,
+              padding: EdgeInsets.all(16),
+            ),
+          ),
+        ),
+        SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   void dispose() {
+    _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
-    udpSocket?.close();
-    _audioRecorder?.closeRecorder();
-    _audioPlayer?.closePlayer();
-    _audioStreamController?.close();
-    _progressController?.close();
-    _connectedUsersNotifier.dispose();
+    // _keepAliveTimer?.cancel();
+    _cleanupAndLeave(); // Use the cleanup method
 
-    for (Socket client in _tcpClients) {
-      client.destroy();
-    }
-    _tcpServer?.close();
+    // udpSocket?.close();
+    // _audioRecorder?.closeRecorder();
+    // _audioPlayer?.closePlayer();
+    // _audioStreamController?.close();
+    // _progressController?.close();
+    // _connectedUsersNotifier.dispose();
+
+    // for (Socket client in _tcpClients) {
+    //   client.destroy();
+    // }
+    // _tcpServer?.close();
     super.dispose();
   }
 
@@ -1488,18 +1901,18 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
-                    SizedBox(height: 16),
-                    LinearProgressIndicator(
-                      value: progress,
-                      backgroundColor: Colors.grey[300],
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      '${(progress * 100).toStringAsFixed(1)}%',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                    ),
+                    // SizedBox(height: 16),
+                    // LinearProgressIndicator(
+                    //   value: progress,
+                    //   backgroundColor: Colors.grey[300],
+                    //   valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                    // ),
+                    // SizedBox(height: 8),
+                    // Text(
+                    //   '${(progress * 100).toStringAsFixed(1)}%',
+                    //   textAlign: TextAlign.center,
+                    //   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    // ),
                     SizedBox(height: 4),
                     Text(
                       'Sending to ${_tcpClients.length} client(s)',
