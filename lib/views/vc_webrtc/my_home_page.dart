@@ -193,7 +193,7 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Callibre © 2022-2025, [MAIONE MIKΨ]')),
+      appBar: AppBar(title: const Text('')),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: FutureBuilder<int>(
         future: signaling.cameraCount(),
@@ -209,7 +209,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 child: const Icon(Icons.share),
                 onPressed: () async {
                   final roomUrl =
-                      'https://mikymaione.github.io/webrtc.github.io?roomId=${roomIdController.text}';
+                      'https://0.0.0.0:8080?roomId=${roomIdController.text}';
 
                   final shareText =
                       '''
