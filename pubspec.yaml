@@ -61,6 +61,7 @@ dependencies:
   equatable: ^2.0.7
   video_player: ^2.10.0
   visibility_detector: ^0.4.0+2
+  flutter_webrtc: ^1.2.0
 
 dev_dependencies:
   flutter_test:

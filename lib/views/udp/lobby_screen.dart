@@ -1,14 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:push_to_talk_app/bloc/camera_bloc.dart';
 import 'package:push_to_talk_app/utils/camera_utils.dart';
 import 'package:push_to_talk_app/utils/permission_utils.dart';
 import 'package:push_to_talk_app/views/udp/file_transfer.dart';
+import 'package:push_to_talk_app/views/udp/voice_recording_model.dart';
 import 'package:push_to_talk_app/views/video_stream/pages/camera_page.dart';
 import 'package:push_to_talk_app/views/video_stream/widgets/video_path_dialog.dart';
 import 'package:udp/udp.dart';
@@ -66,6 +69,18 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   bool _isDisposed = false;
   Timer? _keepAliveTimer;
 
+  // Voice recording history variables
+  List<VoiceRecording> _voiceRecordings = [];
+  static const int VOICE_PORT = 6011;
+
+  // Voice playing variables
+  bool _isPlayingVoice = false;
+  VoiceRecording? _currentlyPlayingRecording;
+  StreamSubscription? _playbackSubscription;
+  double _playbackPosition = 0.0;
+  double _playbackDuration = 0.0;
+  Timer? _playbackTimer;
+
   @override
   void initState() {
     super.initState();
@@ -75,7 +90,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
     _progressController = StreamController<double>.broadcast();
+
     _initAudio();
+    _loadVoiceRecordings(); // Load existing voice recordings
 
     if (widget.isHost) {
       _startReceivingRequests();
@@ -90,6 +107,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _listenForAudio();
     _listenForStreamedAudio(); // New listener for real-time audio
     _listenForVideoStream(); // New listener for video
+    _listenForVoiceRecordings(); // Listen for incoming voice recordings
 
     if (widget.isHost) {
       _startTcpServer();
@@ -219,12 +237,29 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       }
     }
 
-    // Cleanup resources
+    // Cleanup audio resources first
+    try {
+      _silenceTimer?.cancel();
+      // await _stopPlayerForStream();
+      await _audioRecorder?.closeRecorder();
+      await _audioPlayer?.closePlayer();
+      _audioStreamController?.close();
+    } catch (e) {
+      print("❌ Error cleaning up audio resources: $e");
+    }
+    // Stop streaming if active
+    if (_isStreaming) {
+      _stopStreaming();
+    }
+    // Stop recording if active
+    if (_isRecording) {
+      await _audioRecorder!.stopRecorder();
+      setState(() => _isRecording = false);
+    }
+
+    // Cleanup other resources
     _keepAliveTimer?.cancel();
     udpSocket?.close();
-    await _audioRecorder?.closeRecorder();
-    await _audioPlayer?.closePlayer();
-    _audioStreamController?.close();
     _progressController?.close();
 
     // Close TCP connections
@@ -232,13 +267,57 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       client.destroy();
     }
     await _tcpServer?.close();
+    // Send leave notification (if client)
+    if (!widget.isHost && widget.hostIp.isNotEmpty) {
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("LEAVE".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+        );
+        sender.close();
+      } catch (e) {
+        print("❌ Error sending leave message: $e");
+      }
+    }
+    print("🧹 [CLEANUP] All resources cleaned up successfully");
   }
 
   Future<void> _initAudio() async {
-    await _audioRecorder!.openRecorder();
-    await _audioPlayer!.openPlayer();
+    await _audioRecorder?.openRecorder();
+    await _audioPlayer?.openPlayer();
     await _startPlayerForStream(); // Initial setup
+    // try {
+    //   await _audioRecorder?.openRecorder();
+
+    //   // Enhanced player initialization with retry logic
+    //   await _initializeAudioPlayerWithRetry();
+
+    //   await _startPlayerForStream(); // Initial setup
+    // } catch (e) {
+    //   print("❌ [AUDIO] Error initializing audio: $e");
+    //   // Retry initialization after a delay
+    //   await Future.delayed(Duration(seconds: 1));
+    //   await _initializeAudioPlayerWithRetry();
+    // }
   }
+
+  // Future<void> _initializeAudioPlayerWithRetry() async {
+  //   try {
+  //     await _audioPlayer?.openPlayer();
+
+  //     // Additional configuration for better compatibility
+  //     if (Platform.isAndroid) {
+  //       // Set specific configuration for Android devices
+  //       await _audioPlayer?.setSubscriptionDuration(Duration(milliseconds: 10));
+  //     }
+  //   } catch (e) {
+  //     print("❌ [AUDIO] Error opening player: $e");
+  //     // Recreate the player instance if it fails
+  //     _audioPlayer = FlutterSoundPlayer();
+  //     await _audioPlayer?.openPlayer();
+  //   }
+  // }
 
   void _listenForVideoStream() async {
     UDP receiver = await UDP.bind(Endpoint.any(port: Port(VIDEO_PORT)));
@@ -539,26 +618,62 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   Future<void> _startPlayerForStream() async {
     if (!_isPlayerReady) {
-      await _audioPlayer!.startPlayerFromStream(
-        codec: Codec.pcm16,
-        numChannels: 2,
-        sampleRate: Platform.isIOS ? 44100 : 16000,
-        // sampleRate: 48000,
-        interleaved: true,
-        bufferSize: 1024,
-      );
+      try {
+        // Check if player is actually ready and not disposed
+        // if (_audioPlayer?.isStopped ?? true) {
+        //   await _audioPlayer?.openPlayer();
+        // }
 
-      _isPlayerReady = true;
-      print("🎵 [CLIENT] Player initialized for streaming");
-      // }
+        await _audioPlayer?.startPlayerFromStream(
+          codec: Codec.pcm16,
+          numChannels: 1, // Changed from 2 to 1 for better compatibility
+          sampleRate: Platform.isIOS ? 44100 : 16000,
+          // sampleRate: 48000,
+          interleaved: true,
+          bufferSize: 2048, // Increased buffer size for stability
+        );
+
+        _isPlayerReady = true;
+        print("🎵 [CLIENT] Player initialized for streaming");
+      } catch (e) {
+        print("❌ [CLIENT] Error initializing stream player: $e");
+        _isPlayerReady = false;
+
+        // // Reset and retry
+        // await _resetAudioPlayer();
+        // await _startPlayerForStream();
+      }
     }
   }
 
+  // Future<void> _resetAudioPlayer() async {
+  //   try {
+  //     await _audioPlayer?.stopPlayer();
+  //     await _audioPlayer?.closePlayer();
+  //     _audioPlayer = FlutterSoundPlayer();
+  //     await _audioPlayer?.openPlayer();
+  //     _isPlayerReady = false;
+  //   } catch (e) {
+  //     print("❌ [AUDIO] Error resetting audio player: $e");
+  //   }
+  // }
+
   Future<void> _stopPlayerForStream() async {
-    if (_isPlayerReady) {
-      await _audioPlayer!.stopPlayer();
-      _isPlayerReady = false;
-      print("🛑 [CLIENT] Player stopped");
+    try {
+      if (_isPlayerReady) {
+        await _audioPlayer?.stopPlayer();
+
+        // // Check if player is actually playing before stopping
+        // if (!(_audioPlayer?.isStopped ?? true)) {
+        //   await _audioPlayer?.stopPlayer();
+        // }
+        _isPlayerReady = false;
+        print("🛑 [CLIENT] Player stopped");
+      }
+    } catch (e) {
+      print("❌ [CLIENT] Error stopping player: $e");
+      // Force reset on error
+      // await _resetAudioPlayer();
     }
   }
 
@@ -569,41 +684,50 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     setState(() => _isStreaming = true);
 
     _audioStreamController = StreamController<Uint8List>();
-    _audioStreamController!.stream.listen(_sendStreamedAudio);
+    _audioStreamController?.stream.listen(_sendStreamedAudio);
 
-    await _audioRecorder!.startRecorder(
+    await _audioRecorder?.startRecorder(
       codec: Codec.pcm16,
-      numChannels: 2,
+      numChannels: 1,
       // sampleRate: 48000,
       sampleRate: Platform.isIOS ? 44100 : 16000,
       bitRate: 16000,
       // bufferSize: 1024, // 8192
-      bufferSize: 1024,
-      toStream: _audioStreamController!.sink,
+      bufferSize: 2048,
+      toStream: _audioStreamController?.sink,
     );
   }
 
   void _stopStreaming() async {
     if (!_isStreaming) return;
-    setState(() => _isStreaming = false);
-    await _audioRecorder!.stopRecorder();
-    await _audioStreamController?.close();
 
-    // Send stop signal
-    Uint8List stopSignal = Uint8List.fromList([0xFF, 0xFF, 0xFF, 0xFF]);
-    for (String ip in connectedUsers) {
-      if (ip != _myIpAddress) {
-        UDP sender = await UDP.bind(Endpoint.any());
-        await sender.send(
-          stopSignal,
-          Endpoint.unicast(InternetAddress(ip), port: Port(6006)),
-        );
-        sender.close();
+    try {
+      setState(() => _isStreaming = false);
+
+      // Stop recorder first
+      await _audioRecorder!.stopRecorder();
+
+      // Close stream controller
+      await _audioStreamController?.close();
+      _audioStreamController = null;
+
+      // Send stop signal to receivers
+      // Send stop signal
+      Uint8List stopSignal = Uint8List.fromList([0xFF, 0xFF, 0xFF, 0xFF]);
+      for (String ip in connectedUsers) {
+        if (ip != _myIpAddress) {
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            stopSignal,
+            Endpoint.unicast(InternetAddress(ip), port: Port(6006)),
+          );
+          sender.close();
+        }
       }
+      print("🛑 [AUDIO] Stopped streaming successfully");
+    } catch (e) {
+      print("❌ [AUDIO] Error stopping stream: $e");
     }
-
-    _audioStreamController = null;
-    print("🛑 [CLIENT] Stopped streaming");
   }
 
   void _sendStreamedAudio(Uint8List audioChunk) async {
@@ -641,13 +765,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
           if (datagram != null && datagram.data.isNotEmpty) {
             Uint8List audioData = datagram.data;
 
-            // Validate data before processing
-            if (audioData.length % 2 != 0) {
-              print(
-                "⚠️ Skipping misaligned audio chunk: ${audioData.length} bytes",
-              );
-              return;
-            }
+            // // Validate data before processing
+            // if (audioData.length % 2 != 0) {
+            //   print(
+            //     "⚠️ Skipping misaligned audio chunk: ${audioData.length} bytes",
+            //   );
+            //   return;
+            // }
 
             // Check for stop signal
             if (audioData.length == 4 &&
@@ -655,39 +779,90 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                 audioData[1] == 0xFF &&
                 audioData[2] == 0xFF &&
                 audioData[3] == 0xFF) {
-              await _stopPlayerForStream();
+              print("🛑 [AUDIO] Received stop signal");
               _silenceTimer?.cancel();
               return;
             }
 
-            // Process valid audio data
+            // // Ensure player is ready before feeding data
+            // await _startPlayerForStream();
+
+            // // Reset silence timer
+            // _silenceTimer?.cancel();
+            // _silenceTimer = Timer(Duration(milliseconds: 500), () async {
+            //   await _stopPlayerForStream();
+            //   print("🔇 [CLIENT] No audio for 500ms, stopping player...");
+            // });
+
+            // print("📥 Received audio chunk size: ${audioData.length}");
+
+            // await _audioPlayer!.feedUint8FromStream(audioData);
+
+            // Process audio data with enhanced error handling
             await _processAudioData(audioData);
           }
         },
         onError: (error) {
           print("❌ [AUDIO] UDP reception error: $error");
         },
+        cancelOnError: true,
       );
     } catch (e) {
       print("❌ [AUDIO] Error binding UDP socket: $e");
+
+      // Retry binding after delay
+      if (mounted) {
+        Future.delayed(Duration(seconds: 2), () {
+          if (!_isDisposed) {
+            _listenForStreamedAudio();
+          }
+        });
+      }
     }
   }
 
+  // Improved audio data processing
   Future<void> _processAudioData(Uint8List audioData) async {
+    if (_isDisposed) return;
+
     try {
-      await _startPlayerForStream();
+      // Validate audio data
+      if (audioData.isEmpty || audioData.length % 2 != 0) {
+        print("⚠️ [AUDIO] Invalid audio data received, skipping");
+        return;
+      }
 
+      // Ensure player is ready
+      if (!_isPlayerReady) {
+        await _initAudio();
+        if (!_isPlayerReady) {
+          print("❌ [AUDIO] Player not ready, cannot process audio");
+          return;
+        }
+      }
+
+      // Cancel previous silence timer
       _silenceTimer?.cancel();
-      _silenceTimer = Timer(Duration(milliseconds: 500), () async {
-        await _stopPlayerForStream();
-        print("🔇 [CLIENT] No audio for 500ms, stopping player...");
-      });
 
-      print("📥 Received audio chunk size: ${audioData.length}");
-
+      // Feed audio data to player
       await _audioPlayer!.feedUint8FromStream(audioData);
+
+      // Set up new silence timer
+      _silenceTimer = Timer(Duration(milliseconds: 800), () async {
+        if (!_isStreaming && _isPlayerReady) {
+          print(
+            "🔇 [AUDIO] Silence detected, keeping player alive for potential next stream",
+          );
+          // Don't stop the player completely, just log the silence
+        }
+      });
     } catch (e) {
-      print("❌ [AUDIO] Error processing audio: $e");
+      print("❌ [AUDIO] Error processing audio data: $e");
+      // Try to reinitialize player on error
+      if (e.toString().contains("stop") || e.toString().contains("closed")) {
+        _isPlayerReady = false;
+        await _initAudio();
+      }
     }
   }
 
@@ -706,7 +881,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   Future<void> _playAudio(Uint8List audioData) async {
     String tempPath = '${Directory.systemTemp.path}/audio.aac';
     await File(tempPath).writeAsBytes(audioData);
-    await _audioPlayer!.startPlayer(fromURI: tempPath, codec: Codec.aacADTS);
+    await _audioPlayer?.startPlayer(fromURI: tempPath, codec: Codec.aacADTS);
   }
 
   void _startRecording() async {
@@ -716,12 +891,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       _isRecording = true;
     });
 
-    await _audioRecorder!.startRecorder(
-      toFile: 'audio.aac',
-      codec: Codec.aacADTS,
-    );
+    String fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.aac';
+    String filePath = '${await _getVoiceRecordingsDirectory()}/$fileName';
 
-    _audioRecorder!.onProgress!.listen((RecordingDisposition disposition) {
+    await _audioRecorder?.startRecorder(toFile: filePath, codec: Codec.aacADTS);
+
+    _audioRecorder?.onProgress?.listen((RecordingDisposition disposition) {
       // Handle recording progress if needed
     });
   }
@@ -733,10 +908,29 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       _isRecording = false;
     });
 
-    String? path = await _audioRecorder!.stopRecorder();
+    String? path = await _audioRecorder?.stopRecorder();
     if (path != null) {
+      // Add to local recordings
+      VoiceRecording recording = VoiceRecording(
+        filePath: path,
+        fileName: path.split('/').last,
+        timestamp: DateTime.now(),
+        duration: 0, // Calculate actual duration if needed
+        senderIp: _myIpAddress,
+      );
+
+      setState(() {
+        _voiceRecordings.insert(0, recording);
+      });
+
+      await _saveVoiceRecordingMetadata();
+
+      // Send to other users
       Uint8List audioData = await File(path).readAsBytes();
       _sendAudioData(audioData);
+
+      // Also send as voice recording file for history
+      await _sendVoiceRecording(path);
     }
   }
 
@@ -764,7 +958,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     String hostIp = widget.hostIp;
     _addUser(hostIp);
 
-    udpSocket!.asStream().listen((datagram) async {
+    udpSocket?.asStream().listen((datagram) async {
       if (datagram != null) {
         String message = String.fromCharCodes(datagram.data);
         String userIp = datagram.address.address;
@@ -949,7 +1143,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         "sendvideo _startTcpServer 🚀 [HOST] TCP File Server started on port $TCP_FILE_PORT",
       );
 
-      _tcpServer!.listen((Socket client) {
+      _tcpServer?.listen((Socket client) {
         log(
           "sendvideo _startTcpServer 📁 [HOST] New TCP client connected: ${client.remoteAddress.address}",
         );
@@ -1206,12 +1400,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false, // disable default pop until we handle it manually
+      canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return; // already popped by Navigator
+        if (didPop) return;
 
         if (widget.isHost) {
-          // Show confirmation dialog for host
           final shouldExit =
               await showDialog<bool>(
                 context: context,
@@ -1226,7 +1419,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                       child: const Text("Cancel"),
                     ),
                     TextButton(
-                      onPressed: () => Navigator.of(context).pop(true),
+                      onPressed: () async {
+                        await _cleanupAndLeave();
+
+                        Navigator.of(context).pop(true);
+                      },
                       child: const Text("Exit"),
                     ),
                   ],
@@ -1235,7 +1432,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
               false;
 
           if (shouldExit) {
-            // Notify all clients that host is leaving
             for (String ip in connectedUsers) {
               if (ip != _myIpAddress) {
                 try {
@@ -1255,16 +1451,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             if (context.mounted) Navigator.of(context).pop(result);
           }
         } else {
-          // Client can leave directly
           await _cleanupAndLeave();
           if (context.mounted) Navigator.of(context).pop(result);
         }
       },
       child: SafeArea(
-        bottom: true,
-        top: true,
-        right: true,
-        left: true,
         child: Scaffold(
           extendBodyBehindAppBar: true,
           body: SingleChildScrollView(
@@ -1272,7 +1463,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
               onTap: () {
                 FocusManager.instance.primaryFocus?.unfocus();
               },
-
               child: Container(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -1322,6 +1512,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                     shrinkWrap: true,
                                     physics: AlwaysScrollableScrollPhysics(),
                                     itemCount: users.length,
+
                                     itemBuilder: (context, index) {
                                       String ip = users[index];
                                       bool isHost = ip == widget.hostIp;
@@ -1338,57 +1529,66 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                         displayText = "User";
                                       }
 
-                                      return Container(
-                                        margin: EdgeInsets.symmetric(
-                                          vertical: 4,
-                                          horizontal: 8,
-                                        ),
-                                        padding: EdgeInsets.all(12),
-                                        decoration: BoxDecoration(
-                                          color: Colors.grey.shade100,
-                                          borderRadius: BorderRadius.circular(
-                                            12,
+                                      return InkWell(
+                                        borderRadius: BorderRadius.circular(12),
+                                        onTap: () {
+                                          print("Tapped on $ip ($displayText)");
+                                          // 👉 Add your custom logic here, e.g.:
+                                          // Navigator.push(context, MaterialPageRoute(builder: (_) => UserDetailScreen(ip: ip)));
+                                        },
+                                        child: Container(
+                                          margin: EdgeInsets.symmetric(
+                                            vertical: 4,
+                                            horizontal: 8,
                                           ),
-                                          border: Border.all(
-                                            color: Colors.grey.shade300,
-                                            width: 1,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Icon(
-                                              isHost
-                                                  ? Icons.cell_tower
-                                                  : Icons.person,
-                                              color: isHost
-                                                  ? Colors.blue
-                                                  : Colors.green,
-                                              size: 20,
+                                          padding: EdgeInsets.all(12),
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey.shade100,
+                                            borderRadius: BorderRadius.circular(
+                                              12,
                                             ),
-                                            SizedBox(width: 8),
-                                            Expanded(
-                                              child: Text(
-                                                "$displayText: $ip",
-                                                style: TextStyle(
-                                                  fontSize: 14,
-                                                  fontWeight: FontWeight.w500,
-                                                  color: Colors.black87,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
+                                            border: Border.all(
+                                              color: Colors.grey.shade300,
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                isHost
+                                                    ? Icons.cell_tower
+                                                    : Icons.person,
+                                                color: isHost
+                                                    ? Colors.blue
+                                                    : Colors.green,
+                                                size: 20,
                                               ),
-                                            ),
-                                            if (isMe)
-                                              Padding(
-                                                padding: EdgeInsets.only(
-                                                  left: 8,
-                                                ),
-                                                child: Icon(
-                                                  Icons.circle,
-                                                  color: Colors.green,
-                                                  size: 8,
+                                              SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  "$displayText: $ip",
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w500,
+                                                    color: Colors.black87,
+                                                  ),
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                 ),
                                               ),
-                                          ],
+                                              if (isMe)
+                                                Padding(
+                                                  padding: EdgeInsets.only(
+                                                    left: 8,
+                                                  ),
+                                                  child: Icon(
+                                                    Icons.circle,
+                                                    color: Colors.green,
+                                                    size: 8,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
                                         ),
                                       );
                                     },
@@ -1400,7 +1600,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                         ),
                       ),
 
-                      // Messages Section - Expandable
+                      // Messages Section
                       Expanded(
                         child: Container(
                           margin: EdgeInsets.symmetric(horizontal: 10),
@@ -1413,7 +1613,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                           ),
                           child: Column(
                             children: [
-                              // Messages Header
                               Container(
                                 padding: EdgeInsets.all(12),
                                 decoration: BoxDecoration(
@@ -1450,8 +1649,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                   ],
                                 ),
                               ),
-
-                              // Messages List
                               Expanded(
                                 child: messages.isEmpty
                                     ? Center(
@@ -1630,7 +1827,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    // List Videos Button
                                     _buildControlButton(
                                       icon: Icons.video_library,
                                       label: "Videos",
@@ -1638,7 +1834,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                       color: Colors.blue,
                                     ),
                                     SizedBox(width: 16),
-                                    // Record Video Button
                                     _buildControlButton(
                                       icon: Icons.videocam,
                                       label: "Record",
@@ -1677,6 +1872,46 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                       },
                                       color: Colors.red,
                                     ),
+                                    SizedBox(width: 16),
+
+                                    _buildControlButton(
+                                      icon: Icons.video_call_outlined,
+                                      label: "Video Call",
+                                      onPressed: () {
+                                        // Navigator.of(context).push(
+                                        //   MaterialPageRoute(
+                                        //     builder: (context) => BlocProvider(
+                                        //       create: (context) {
+                                        //         return CameraBloc(
+                                        //           cameraUtils: CameraUtils(),
+                                        //           permissionUtils:
+                                        //               PermissionUtils(),
+                                        //         )..add(
+                                        //           const CameraInitialize(
+                                        //             recordingLimit: 15,
+                                        //           ),
+                                        //         );
+                                        //       },
+                                        //       child: CameraPage(
+                                        //         onVideoRecorded:
+                                        //             (String videoPath) async {
+                                        //               print(
+                                        //                 'sendvideo Video recorded at: $videoPath',
+                                        //               );
+                                        //               XFile xFile = XFile(
+                                        //                 videoPath,
+                                        //               );
+                                        //               await _sendVideoFileOverTCP(
+                                        //                 xFile,
+                                        //               );
+                                        //             },
+                                        //       ),
+                                        //     ),
+                                        //   ),
+                                        // );
+                                      },
+                                      color: Colors.red,
+                                    ),
                                   ],
                                 ),
                               ],
@@ -1684,11 +1919,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
                             SizedBox(height: 16),
 
-                            // Voice Controls Section
+                            // Voice Controls Section - UPDATED
                             Column(
                               children: [
                                 Text(
-                                  "Voice Message",
+                                  "Voice Messages",
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w600,
@@ -1699,6 +1934,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
+                                    // Voice Recordings History Button
+                                    _buildControlButton(
+                                      icon: Icons.audio_file,
+                                      label: "History",
+                                      onPressed: _listAllVoiceRecordings,
+                                      color: Colors.purple,
+                                    ),
+                                    SizedBox(width: 16),
                                     // Recording Button
                                     _buildControlButton(
                                       icon: _isRecording
@@ -1847,6 +2090,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   void dispose() {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
+    // Clean up playback resources
+    _stopVoicePlayback();
+    _playbackTimer?.cancel();
+    _playbackSubscription?.cancel();
+
     // _keepAliveTimer?.cancel();
     _cleanupAndLeave(); // Use the cleanup method
 
@@ -1862,6 +2110,520 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     // }
     // _tcpServer?.close();
     super.dispose();
+  }
+
+  // Load voice recordings from storage
+  Future<void> _loadVoiceRecordings() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final voiceDir = Directory('${directory.path}/voice_recordings');
+
+      if (await voiceDir.exists()) {
+        List<FileSystemEntity> files = voiceDir.listSync();
+        files.sort(
+          (a, b) => b.statSync().modified.compareTo(a.statSync().modified),
+        );
+
+        List<VoiceRecording> recordings = [];
+        for (var file in files) {
+          if (file.path.toLowerCase().endsWith('.aac') ||
+              file.path.toLowerCase().endsWith('.m4a')) {
+            String fileName = file.path.split('/').last;
+            DateTime timestamp = (await file.stat()).modified;
+
+            recordings.add(
+              VoiceRecording(
+                filePath: file.path,
+                fileName: fileName,
+                timestamp: timestamp,
+                duration: 0, // You might want to calculate this
+                senderIp: _myIpAddress,
+              ),
+            );
+          }
+        }
+
+        setState(() {
+          _voiceRecordings = recordings;
+        });
+      }
+    } catch (e) {
+      print("❌ Error loading voice recordings: $e");
+    }
+  }
+
+  // Save voice recording metadata
+  Future<void> _saveVoiceRecordingMetadata() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final metadataFile = File(
+        '${directory.path}/voice_recordings_metadata.json',
+      );
+
+      List<Map<String, dynamic>> recordingsJson = _voiceRecordings
+          .map((recording) => recording.toJson())
+          .toList();
+
+      await metadataFile.writeAsString(json.encode(recordingsJson));
+    } catch (e) {
+      print("❌ Error saving voice recording metadata: $e");
+    }
+  }
+
+  // Get voice recordings directory
+  Future<String> _getVoiceRecordingsDirectory() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final voiceDir = Directory('${directory.path}/voice_recordings');
+
+    if (!await voiceDir.exists()) {
+      await voiceDir.create(recursive: true);
+    }
+
+    return voiceDir.path;
+  }
+
+  // Listen for incoming voice recordings
+  void _listenForVoiceRecordings() async {
+    UDP receiver = await UDP.bind(Endpoint.any(port: Port(VOICE_PORT)));
+    print("🎵 [VOICE] Listening for voice recordings on port $VOICE_PORT...");
+
+    receiver.asStream().listen((datagram) async {
+      if (datagram != null && datagram.data.isNotEmpty) {
+        String senderIp = datagram.address.address;
+        Uint8List data = datagram.data;
+
+        try {
+          // Check if this is a voice recording file
+          if (data.length > 100) {
+            // Assuming voice files are larger than 100 bytes
+            await _saveReceivedVoiceRecording(data, senderIp);
+          }
+        } catch (e) {
+          print("❌ Error processing voice recording from $senderIp: $e");
+        }
+      }
+    });
+  }
+
+  // Save received voice recording
+  Future<void> _saveReceivedVoiceRecording(
+    Uint8List audioData,
+    String senderIp,
+  ) async {
+    try {
+      final voiceDir = await _getVoiceRecordingsDirectory();
+      String fileName =
+          'voice_${DateTime.now().millisecondsSinceEpoch}_from_${senderIp.replaceAll('.', '_')}.aac';
+      String filePath = '$voiceDir/$fileName';
+
+      await File(filePath).writeAsBytes(audioData);
+
+      VoiceRecording recording = VoiceRecording(
+        filePath: filePath,
+        fileName: fileName,
+        timestamp: DateTime.now(),
+        duration: 0, // You might want to calculate actual duration
+        senderIp: senderIp,
+      );
+
+      setState(() {
+        _voiceRecordings.insert(
+          0,
+          recording,
+        ); // Add to beginning for newest first
+      });
+
+      await _saveVoiceRecordingMetadata();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Voice message received from ${senderIp == _myIpAddress ? 'You' : senderIp}',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+
+      print("🎵 Voice recording saved: $filePath");
+    } catch (e) {
+      print("❌ Error saving voice recording: $e");
+    }
+  }
+
+  // Send voice recording to all users
+  Future<void> _sendVoiceRecording(String filePath) async {
+    try {
+      Uint8List audioData = await File(filePath).readAsBytes();
+
+      for (String ip in connectedUsers) {
+        if (ip != _myIpAddress) {
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            audioData,
+            Endpoint.unicast(InternetAddress(ip), port: Port(VOICE_PORT)),
+          );
+          sender.close();
+        }
+      }
+
+      print("🎵 Voice recording sent to ${connectedUsers.length - 1} users");
+    } catch (e) {
+      print("❌ Error sending voice recording: $e");
+    }
+  }
+
+  // List all voice recordings
+  Future<void> _listAllVoiceRecordings() async {
+    try {
+      if (_voiceRecordings.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('No voice recordings found')));
+        }
+        return;
+      }
+
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Voice Recordings (${_voiceRecordings.length})'),
+          content: Container(
+            width: double.maxFinite,
+            height: MediaQuery.of(context).size.height * 0.6,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: _voiceRecordings.length,
+              itemBuilder: (context, index) {
+                VoiceRecording recording = _voiceRecordings[index];
+                bool isMyRecording = recording.senderIp == _myIpAddress;
+
+                return Container(
+                  margin: EdgeInsets.symmetric(vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isMyRecording ? Colors.blue[50] : Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isMyRecording
+                          ? Colors.blue[100]!
+                          : Colors.grey[300]!,
+                    ),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      Icons.audiotrack,
+                      color: isMyRecording ? Colors.blue : Colors.green,
+                    ),
+                    title: Text(
+                      'Voice Message',
+                      style: TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'From: ${isMyRecording ? 'You' : recording.senderIp}',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        Text(
+                          _formatDateTime(recording.timestamp),
+                          style: TextStyle(fontSize: 10, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.play_arrow, color: Colors.green),
+                          onPressed: () => _playVoiceRecording(recording),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.delete, color: Colors.red),
+                          onPressed: () =>
+                              _deleteVoiceRecording(recording, index),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      print("❌ Error listing voice recordings: $e");
+    }
+  }
+
+  // Play voice recording with dialog
+  Future<void> _playVoiceRecording(VoiceRecording recording) async {
+    try {
+      // Close the history dialog first
+      Navigator.of(context).pop();
+
+      // Set currently playing recording
+      setState(() {
+        _currentlyPlayingRecording = recording;
+        _isPlayingVoice = true;
+        _playbackPosition = 0.0;
+      });
+
+      // Show playing dialog
+      _showVoicePlayingDialog(recording);
+
+      // Start playback
+      await _audioPlayer?.startPlayer(
+        fromURI: recording.filePath,
+        codec: Codec.aacADTS,
+      );
+
+      // Listen for playback completion
+      _playbackSubscription = _audioPlayer?.onProgress?.listen((duration) {
+        setState(() {
+          _playbackPosition = duration.position.inMilliseconds.toDouble();
+          _playbackDuration = duration.duration.inMilliseconds.toDouble();
+        });
+      });
+
+      // Set up timer to update progress
+      _playbackTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+        if (!_isPlayingVoice) {
+          timer.cancel();
+        }
+      });
+
+      // Wait for playback to complete
+      await _audioPlayer?.stopPlayer();
+
+      // Playback completed
+      _stopVoicePlayback();
+    } catch (e) {
+      print("❌ Error playing voice recording: $e");
+      _stopVoicePlayback();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error playing voice message'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Stop voice playback
+  void _stopVoicePlayback() async {
+    _playbackTimer?.cancel();
+    _playbackSubscription?.cancel();
+    await _audioPlayer?.stopPlayer();
+
+    setState(() {
+      _isPlayingVoice = false;
+      _currentlyPlayingRecording = null;
+      _playbackPosition = 0.0;
+      _playbackDuration = 0.0;
+    });
+
+    // Close the playing dialog if it's open
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  // Pause/Resume voice playback
+  void _pauseResumeVoicePlayback() async {
+    if (_isPlayingVoice) {
+      await _audioPlayer?.pausePlayer();
+      setState(() {
+        _isPlayingVoice = false;
+      });
+    } else {
+      await _audioPlayer?.resumePlayer();
+      setState(() {
+        _isPlayingVoice = true;
+      });
+    }
+  }
+
+  // Show voice playing dialog
+  void _showVoicePlayingDialog(VoiceRecording recording) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: Row(
+              children: [
+                Icon(Icons.audiotrack, color: Colors.blue),
+                SizedBox(width: 8),
+                Text('Playing Voice Message'),
+              ],
+            ),
+            content: Container(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Sender information
+                  Text(
+                    'From: ${recording.senderIp == _myIpAddress ? 'You' : recording.senderIp}',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    _formatDateTime(recording.timestamp),
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  SizedBox(height: 16),
+
+                  // Progress bar
+                  Container(
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Stack(
+                      children: [
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            double progress = _playbackDuration > 0
+                                ? _playbackPosition / _playbackDuration
+                                : 0.0;
+                            return AnimatedContainer(
+                              duration: Duration(milliseconds: 100),
+                              width: constraints.maxWidth * progress,
+                              decoration: BoxDecoration(
+                                color: Colors.blue,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: 8),
+
+                  // Time indicators
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _formatMilliseconds(_playbackPosition.toInt()),
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      Text(
+                        _formatMilliseconds(_playbackDuration.toInt()),
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 16),
+
+                  // Playback status
+                  Center(
+                    child: Text(
+                      _isPlayingVoice ? 'Playing...' : 'Paused',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: _isPlayingVoice ? Colors.green : Colors.orange,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              // Stop button
+              TextButton(
+                onPressed: _stopVoicePlayback,
+                child: Text('Stop', style: TextStyle(color: Colors.red)),
+              ),
+
+              // Pause/Resume button
+              TextButton(
+                onPressed: () {
+                  _pauseResumeVoicePlayback();
+                  setState(() {}); // Update the dialog state
+                },
+                child: Text(
+                  _isPlayingVoice ? 'Pause' : 'Resume',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    ).then((value) {
+      // Dialog was dismissed, stop playback
+      _stopVoicePlayback();
+    });
+  }
+
+  // Format milliseconds to MM:SS
+  String _formatMilliseconds(int milliseconds) {
+    int seconds = (milliseconds / 1000).round();
+    int minutes = seconds ~/ 60;
+    seconds = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  // Delete voice recording
+  void _deleteVoiceRecording(VoiceRecording recording, int index) async {
+    try {
+      // If currently playing, stop playback first
+      if (_currentlyPlayingRecording?.filePath == recording.filePath) {
+        _stopVoicePlayback();
+      }
+
+      await File(recording.filePath).delete();
+
+      setState(() {
+        _voiceRecordings.removeAt(index);
+      });
+
+      await _saveVoiceRecordingMetadata();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Voice recording deleted'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print("❌ Error deleting voice recording: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete voice recording'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Format date time for display
+  String _formatDateTime(DateTime dateTime) {
+    return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')} ${dateTime.day}/${dateTime.month}/${dateTime.year}';
   }
 
   // Show file transfer progress dialog
