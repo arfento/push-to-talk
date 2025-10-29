@@ -10,6 +10,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:push_to_talk_app/bloc/camera_bloc.dart';
 import 'package:push_to_talk_app/utils/camera_utils.dart';
 import 'package:push_to_talk_app/utils/permission_utils.dart';
+import 'package:push_to_talk_app/views/components/audio_dialog_example.dart';
+import 'package:push_to_talk_app/views/components/modern_audio_dialog.dart';
 import 'package:push_to_talk_app/views/udp/file_transfer.dart';
 import 'package:push_to_talk_app/views/udp/voice_recording_model.dart';
 import 'package:push_to_talk_app/views/video_stream/pages/camera_page.dart';
@@ -36,7 +38,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   UDP? udpSocket;
   static const int discoveryPort = 5000;
   FlutterSoundRecorder? _audioRecorder;
-  FlutterSoundPlayer? _audioPlayer;
+  FlutterSoundPlayer _audioPlayer = FlutterSoundPlayer();
   bool _isRecording = false;
   String _myIpAddress = '';
   bool _isStreaming = false; // For real-time streaming
@@ -284,8 +286,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initAudio() async {
-    await _audioRecorder?.openRecorder();
     await _audioPlayer?.openPlayer();
+    await _audioRecorder?.openRecorder();
     await _startPlayerForStream(); // Initial setup
     // try {
     //   await _audioRecorder?.openRecorder();
@@ -784,8 +786,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
               return;
             }
 
-            // // Ensure player is ready before feeding data
-            // await _startPlayerForStream();
+            // Ensure player is ready before feeding data
+            await _startPlayerForStream();
 
             // // Reset silence timer
             // _silenceTimer?.cancel();
@@ -2338,7 +2340,26 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                       children: [
                         IconButton(
                           icon: Icon(Icons.play_arrow, color: Colors.green),
-                          onPressed: () => _playVoiceRecording(recording),
+                          onPressed: () {
+                            // _playVoiceRecording(recording);
+                            // showDialog(
+                            //   context: context,
+                            //   builder: (context) => AudioDialogExample(
+                            //     audioPath:
+                            //         recording.filePath, // or a local file path
+                            //   ),
+                            // );
+
+                            showDialog(
+                              context: context,
+                              builder: (context) => ModernAudioDialog(
+                                filePath: recording.filePath,
+                                sender: recording.senderIp,
+                                timestamp: DateTime.now(),
+                                isMyRecording: isMyRecording,
+                              ),
+                            );
+                          },
                         ),
                         IconButton(
                           icon: Icon(Icons.delete, color: Colors.red),
@@ -2366,51 +2387,40 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   // Play voice recording with dialog
+  // Play voice recording with dialog
   Future<void> _playVoiceRecording(VoiceRecording recording) async {
     try {
-      // Close the history dialog first
-      Navigator.of(context).pop();
-
-      // Set currently playing recording
       setState(() {
         _currentlyPlayingRecording = recording;
         _isPlayingVoice = true;
         _playbackPosition = 0.0;
+        _playbackDuration = 0.0;
       });
 
-      // Show playing dialog
-      _showVoicePlayingDialog(recording);
+      // Open player if not yet
+      await _audioPlayer?.openPlayer();
+      _audioPlayer?.setSubscriptionDuration(const Duration(milliseconds: 500));
 
       // Start playback
       await _audioPlayer?.startPlayer(
         fromURI: recording.filePath,
         codec: Codec.aacADTS,
+        whenFinished: () {
+          if (mounted) {
+            setState(() {
+              _isPlayingVoice = false;
+              _playbackPosition = 0.0;
+            });
+            Navigator.of(context, rootNavigator: true).pop(); // close dialog
+          }
+        },
       );
 
-      // Listen for playback completion
-      _playbackSubscription = _audioPlayer?.onProgress?.listen((duration) {
-        setState(() {
-          _playbackPosition = duration.position.inMilliseconds.toDouble();
-          _playbackDuration = duration.duration.inMilliseconds.toDouble();
-        });
-      });
-
-      // Set up timer to update progress
-      _playbackTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
-        if (!_isPlayingVoice) {
-          timer.cancel();
-        }
-      });
-
-      // Wait for playback to complete
-      await _audioPlayer?.stopPlayer();
-
-      // Playback completed
-      _stopVoicePlayback();
+      // Show playing dialog (after start)
+      _showVoicePlayingDialog(recording);
     } catch (e) {
       print("❌ Error playing voice recording: $e");
       _stopVoicePlayback();
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -2423,157 +2433,186 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   // Stop voice playback
-  void _stopVoicePlayback() async {
-    _playbackTimer?.cancel();
-    _playbackSubscription?.cancel();
+  Future<void> _stopVoicePlayback() async {
     await _audioPlayer?.stopPlayer();
+    await _playbackSubscription?.cancel();
 
-    setState(() {
-      _isPlayingVoice = false;
-      _currentlyPlayingRecording = null;
-      _playbackPosition = 0.0;
-      _playbackDuration = 0.0;
-    });
-
-    // Close the playing dialog if it's open
     if (mounted) {
-      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.of(context, rootNavigator: true).maybePop();
+      setState(() {
+        _isPlayingVoice = false;
+        _currentlyPlayingRecording = null;
+        _playbackPosition = 0.0;
+        _playbackDuration = 0.0;
+      });
     }
   }
 
-  // Pause/Resume voice playback
-  void _pauseResumeVoicePlayback() async {
+  // Pause/Resume playback
+  Future<void> _pauseResumeVoicePlayback() async {
     if (_isPlayingVoice) {
       await _audioPlayer?.pausePlayer();
-      setState(() {
-        _isPlayingVoice = false;
-      });
     } else {
       await _audioPlayer?.resumePlayer();
-      setState(() {
-        _isPlayingVoice = true;
-      });
+    }
+    if (mounted) {
+      setState(() => _isPlayingVoice = !_isPlayingVoice);
     }
   }
 
   // Show voice playing dialog
   void _showVoicePlayingDialog(VoiceRecording recording) {
+    _playbackSubscription = _audioPlayer?.onProgress?.listen((event) {
+      if (!mounted) return;
+      setState(() {
+        _playbackPosition = event.position.inMilliseconds.toDouble();
+        _playbackDuration = event.duration.inMilliseconds.toDouble();
+      });
+    });
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) {
-          return AlertDialog(
-            title: Row(
-              children: [
-                Icon(Icons.audiotrack, color: Colors.blue),
-                SizedBox(width: 8),
-                Text('Playing Voice Message'),
-              ],
-            ),
-            content: Container(
-              width: double.maxFinite,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Sender information
-                  Text(
-                    'From: ${recording.senderIp == _myIpAddress ? 'You' : recording.senderIp}',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-                  ),
-                  SizedBox(height: 4),
-                  Text(
-                    _formatDateTime(recording.timestamp),
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  SizedBox(height: 16),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            double progress = _playbackDuration > 0
+                ? (_playbackPosition / _playbackDuration).clamp(0.0, 1.0)
+                : 0.0;
 
-                  // Progress bar
-                  Container(
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Stack(
+            return Dialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
                       children: [
-                        LayoutBuilder(
-                          builder: (context, constraints) {
-                            double progress = _playbackDuration > 0
-                                ? _playbackPosition / _playbackDuration
-                                : 0.0;
-                            return AnimatedContainer(
-                              duration: Duration(milliseconds: 100),
-                              width: constraints.maxWidth * progress,
-                              decoration: BoxDecoration(
-                                color: Colors.blue,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                            );
-                          },
+                        const Icon(Icons.audiotrack, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            "Playing Voice Message",
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ],
                     ),
-                  ),
-                  SizedBox(height: 8),
+                    const SizedBox(height: 16),
 
-                  // Time indicators
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        _formatMilliseconds(_playbackPosition.toInt()),
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
-                      Text(
-                        _formatMilliseconds(_playbackDuration.toInt()),
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 16),
-
-                  // Playback status
-                  Center(
-                    child: Text(
-                      _isPlayingVoice ? 'Playing...' : 'Paused',
-                      style: TextStyle(
+                    // Sender info
+                    Text(
+                      'From: ${recording.senderIp == _myIpAddress ? 'You' : recording.senderIp}',
+                      style: const TextStyle(
                         fontSize: 14,
-                        color: _isPlayingVoice ? Colors.green : Colors.orange,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              // Stop button
-              TextButton(
-                onPressed: _stopVoicePlayback,
-                child: Text('Stop', style: TextStyle(color: Colors.red)),
-              ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatDateTime(recording.timestamp),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 16),
 
-              // Pause/Resume button
-              TextButton(
-                onPressed: () {
-                  _pauseResumeVoicePlayback();
-                  setState(() {}); // Update the dialog state
-                },
-                child: Text(
-                  _isPlayingVoice ? 'Pause' : 'Resume',
-                  style: TextStyle(color: Colors.blue),
+                    // Slider and duration
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Slider(
+                          value: _playbackPosition.clamp(
+                            0.0,
+                            _playbackDuration,
+                          ),
+                          min: 0.0,
+                          max: _playbackDuration > 0 ? _playbackDuration : 1.0,
+                          activeColor: Colors.blue,
+                          inactiveColor: Colors.grey[300],
+                          onChanged: (value) async {
+                            await _audioPlayer?.seekToPlayer(
+                              Duration(milliseconds: value.toInt()),
+                            );
+                          },
+                        ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              _formatMilliseconds(_playbackPosition.toInt()),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                            Text(
+                              _formatMilliseconds(_playbackDuration.toInt()),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Status text
+                    Center(
+                      child: Text(
+                        _isPlayingVoice ? 'Playing...' : 'Paused',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: _isPlayingVoice
+                              ? Colors.green
+                              : Colors.orangeAccent,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Control buttons
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () async => await _stopVoicePlayback(),
+                          child: const Text(
+                            'Stop',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton(
+                          onPressed: () async {
+                            await _pauseResumeVoicePlayback();
+                            setDialogState(() {});
+                          },
+                          child: Text(
+                            _isPlayingVoice ? 'Pause' : 'Resume',
+                            style: const TextStyle(color: Colors.blue),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ],
-          );
-        },
-      ),
-    ).then((value) {
-      // Dialog was dismissed, stop playback
-      _stopVoicePlayback();
-    });
+            );
+          },
+        );
+      },
+    ).then((_) => _stopVoicePlayback());
   }
 
   // Format milliseconds to MM:SS
