@@ -509,9 +509,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       log('sendvideo _listAllVideos videoDir: $videoDir');
       if (!await videoDir.exists()) {
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('No videos found')));
+          ScaffoldMessenger.of(context)
+            ..removeCurrentSnackBar()
+            ..showSnackBar(SnackBar(content: Text('No videos found')));
         }
         return;
       }
@@ -530,9 +530,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
         if (videoFiles.isEmpty) {
           if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('No videos found')));
+            ScaffoldMessenger.of(context)
+              ..removeCurrentSnackBar()
+              ..showSnackBar(SnackBar(content: Text('No videos found')));
           }
           return;
         }
@@ -598,22 +598,26 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     try {
       await videoFile.delete();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Video deleted'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Video deleted'),
+              backgroundColor: Colors.green,
+            ),
+          );
       }
     } catch (e) {
       print("❌ Error deleting video: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete video'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete video'),
+              backgroundColor: Colors.red,
+            ),
+          );
       }
     }
   }
@@ -1246,12 +1250,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   Future<void> _sendVideoFileOverTCP(XFile videoFile) async {
     if (_tcpClients.isEmpty) {
       log("sendvideo ❌ No TCP connections available");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No TCP connections available'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      ScaffoldMessenger.of(context)
+        ..removeCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('No TCP connections available'),
+            backgroundColor: Colors.red,
+          ),
+        );
       return;
     }
 
@@ -1320,22 +1326,26 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Video sent to $successfulSends client(s)'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Video sent to $successfulSends client(s)'),
+              backgroundColor: Colors.green,
+            ),
+          );
       }
     } catch (e) {
       log("sendvideo ❌ [TCP] Error sending video file: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error sending video file: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Error sending video file: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
       }
     } finally {
       progressTimer?.cancel();
@@ -1355,12 +1365,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       await File(filePath).writeAsBytes(fileData);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('File received: $fileName'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('File received: $fileName'),
+              backgroundColor: Colors.green,
+            ),
+          );
       }
 
       log("sendvideo _saveReceivedFile 💾 File saved: $filePath");
@@ -1963,16 +1975,16 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                               _startRecording();
                                             } else {
                                               log("Permission is denied");
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Microphone permission required',
+                                              ScaffoldMessenger.of(context)
+                                                ..removeCurrentSnackBar()
+                                                ..showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      'Microphone permission required',
+                                                    ),
+                                                    backgroundColor: Colors.red,
                                                   ),
-                                                  backgroundColor: Colors.red,
-                                                ),
-                                              );
+                                                );
                                             }
                                           }
                                         }
@@ -2002,16 +2014,16 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                               _startStreaming();
                                             } else {
                                               log("Permission is denied");
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Microphone permission required',
+                                              ScaffoldMessenger.of(context)
+                                                ..removeCurrentSnackBar()
+                                                ..showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      'Microphone permission required',
+                                                    ),
+                                                    backgroundColor: Colors.red,
                                                   ),
-                                                  backgroundColor: Colors.red,
-                                                ),
-                                              );
+                                                );
                                             }
                                           }
                                         }
@@ -2238,14 +2250,16 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       await _saveVoiceRecordingMetadata();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Voice message received from ${senderIp == _myIpAddress ? 'You' : senderIp}',
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text(
+                'Voice message received from ${senderIp == _myIpAddress ? 'You' : senderIp}',
+              ),
+              backgroundColor: Colors.green,
             ),
-            backgroundColor: Colors.green,
-          ),
-        );
+          );
       }
 
       print("🎵 Voice recording saved: $filePath");
@@ -2281,9 +2295,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     try {
       if (_voiceRecordings.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('No voice recordings found')));
+          ScaffoldMessenger.of(context)
+            ..removeCurrentSnackBar()
+            ..showSnackBar(
+              SnackBar(content: Text('No voice recordings found')),
+            );
         }
         return;
       }
@@ -2341,15 +2357,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                         IconButton(
                           icon: Icon(Icons.play_arrow, color: Colors.green),
                           onPressed: () {
-                            // _playVoiceRecording(recording);
-                            // showDialog(
-                            //   context: context,
-                            //   builder: (context) => AudioDialogExample(
-                            //     audioPath:
-                            //         recording.filePath, // or a local file path
-                            //   ),
-                            // );
-
                             showDialog(
                               context: context,
                               builder: (context) => ModernAudioDialog(
@@ -2386,52 +2393,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
-  // Play voice recording with dialog
-  // Play voice recording with dialog
-  Future<void> _playVoiceRecording(VoiceRecording recording) async {
-    try {
-      setState(() {
-        _currentlyPlayingRecording = recording;
-        _isPlayingVoice = true;
-        _playbackPosition = 0.0;
-        _playbackDuration = 0.0;
-      });
-
-      // Open player if not yet
-      await _audioPlayer?.openPlayer();
-      _audioPlayer?.setSubscriptionDuration(const Duration(milliseconds: 500));
-
-      // Start playback
-      await _audioPlayer?.startPlayer(
-        fromURI: recording.filePath,
-        codec: Codec.aacADTS,
-        whenFinished: () {
-          if (mounted) {
-            setState(() {
-              _isPlayingVoice = false;
-              _playbackPosition = 0.0;
-            });
-            Navigator.of(context, rootNavigator: true).pop(); // close dialog
-          }
-        },
-      );
-
-      // Show playing dialog (after start)
-      _showVoicePlayingDialog(recording);
-    } catch (e) {
-      print("❌ Error playing voice recording: $e");
-      _stopVoicePlayback();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error playing voice message'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
   // Stop voice playback
   Future<void> _stopVoicePlayback() async {
     await _audioPlayer?.stopPlayer();
@@ -2446,181 +2407,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         _playbackDuration = 0.0;
       });
     }
-  }
-
-  // Pause/Resume playback
-  Future<void> _pauseResumeVoicePlayback() async {
-    if (_isPlayingVoice) {
-      await _audioPlayer?.pausePlayer();
-    } else {
-      await _audioPlayer?.resumePlayer();
-    }
-    if (mounted) {
-      setState(() => _isPlayingVoice = !_isPlayingVoice);
-    }
-  }
-
-  // Show voice playing dialog
-  void _showVoicePlayingDialog(VoiceRecording recording) {
-    _playbackSubscription = _audioPlayer?.onProgress?.listen((event) {
-      if (!mounted) return;
-      setState(() {
-        _playbackPosition = event.position.inMilliseconds.toDouble();
-        _playbackDuration = event.duration.inMilliseconds.toDouble();
-      });
-    });
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            double progress = _playbackDuration > 0
-                ? (_playbackPosition / _playbackDuration).clamp(0.0, 1.0)
-                : 0.0;
-
-            return Dialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Header
-                    Row(
-                      children: [
-                        const Icon(Icons.audiotrack, color: Colors.blue),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            "Playing Voice Message",
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Sender info
-                    Text(
-                      'From: ${recording.senderIp == _myIpAddress ? 'You' : recording.senderIp}',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatDateTime(recording.timestamp),
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Slider and duration
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Slider(
-                          value: _playbackPosition.clamp(
-                            0.0,
-                            _playbackDuration,
-                          ),
-                          min: 0.0,
-                          max: _playbackDuration > 0 ? _playbackDuration : 1.0,
-                          activeColor: Colors.blue,
-                          inactiveColor: Colors.grey[300],
-                          onChanged: (value) async {
-                            await _audioPlayer?.seekToPlayer(
-                              Duration(milliseconds: value.toInt()),
-                            );
-                          },
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              _formatMilliseconds(_playbackPosition.toInt()),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey,
-                              ),
-                            ),
-                            Text(
-                              _formatMilliseconds(_playbackDuration.toInt()),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Status text
-                    Center(
-                      child: Text(
-                        _isPlayingVoice ? 'Playing...' : 'Paused',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: _isPlayingVoice
-                              ? Colors.green
-                              : Colors.orangeAccent,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Control buttons
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: () async => await _stopVoicePlayback(),
-                          child: const Text(
-                            'Stop',
-                            style: TextStyle(color: Colors.red),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          onPressed: () async {
-                            await _pauseResumeVoicePlayback();
-                            setDialogState(() {});
-                          },
-                          child: Text(
-                            _isPlayingVoice ? 'Pause' : 'Resume',
-                            style: const TextStyle(color: Colors.blue),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    ).then((_) => _stopVoicePlayback());
-  }
-
-  // Format milliseconds to MM:SS
-  String _formatMilliseconds(int milliseconds) {
-    int seconds = (milliseconds / 1000).round();
-    int minutes = seconds ~/ 60;
-    seconds = seconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
   // Delete voice recording
@@ -2640,22 +2426,28 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       await _saveVoiceRecordingMetadata();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Voice recording deleted'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        Navigator.of(context, rootNavigator: true).maybePop();
+
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Voice recording deleted'),
+              backgroundColor: Colors.green,
+            ),
+          );
       }
     } catch (e) {
       print("❌ Error deleting voice recording: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete voice recording'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete voice recording'),
+              backgroundColor: Colors.red,
+            ),
+          );
       }
     }
   }
