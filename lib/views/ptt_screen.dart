@@ -1,6 +1,7 @@
 import 'package:animated_text_kit/animated_text_kit.dart';
 import 'package:flutter/material.dart';
 import 'package:push_to_talk_app/utils/constants/constants.dart';
+import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/record_screen/audio_record_screen.dart';
 import 'package:push_to_talk_app/views/udp/udp_home_screen.dart';
 import 'package:push_to_talk_app/views/video_stream/pages/camera_page.dart';
@@ -146,7 +147,7 @@ class _PTTScreenState extends State<PTTScreen>
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => AudioRecordScreen(),
+                          builder: (context) => RadioStreamingScreen(),
                         ),
                       );
                     },

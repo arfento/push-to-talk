@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:push_to_talk_app/bloc/camera_bloc.dart';
+import 'package:push_to_talk_app/services/network_service.dart';
 import 'package:push_to_talk_app/utils/camera_utils.dart';
 import 'package:push_to_talk_app/utils/permission_utils.dart';
 import 'package:push_to_talk_app/views/components/modern_audio_dialog.dart';
@@ -25,8 +26,14 @@ class LobbyScreen extends StatefulWidget with WidgetsBindingObserver {
   static const String id = 'lobby_screen';
   final bool isHost;
   final String hostIp; // Host's IP
+  final String lobbyId; // Pass the lobby ID
 
-  const LobbyScreen({super.key, required this.isHost, required this.hostIp});
+  const LobbyScreen({
+    super.key,
+    required this.isHost,
+    required this.hostIp,
+    required this.lobbyId,
+  });
 
   @override
   State<LobbyScreen> createState() => _LobbyScreenState();
@@ -36,6 +43,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   // List<String> connectedUsers = []; // Stores connected IPs
   final ValueNotifier<List<String>> _connectedUsersNotifier =
       ValueNotifier<List<String>>([]); // Real-time connected users
+  final NetworkService networkService = NetworkService();
 
   UDP? udpSocket;
   static const int discoveryPort = 5000;
@@ -2055,6 +2063,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     //   client.destroy();
     // }
     // _tcpServer?.close();
+    if (widget.isHost) {
+      networkService.removeLobby(widget.lobbyId);
+    }
     super.dispose();
   }
 

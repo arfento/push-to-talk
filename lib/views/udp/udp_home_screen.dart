@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -20,9 +21,42 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
   bool _isCreatingLobby = false;
   bool _isJoiningLobby = false;
 
+  // Controllers for input fields
+  final TextEditingController _lobbyIdController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+
+  // For creating lobby
+  final TextEditingController _createLobbyIdController =
+      TextEditingController();
+  final TextEditingController _createPasswordController =
+      TextEditingController();
+
   @override
   void initState() {
     super.initState();
+    // Generate a random lobby ID suggestion
+    _createLobbyIdController.text = _generateLobbyId();
+  }
+
+  @override
+  void dispose() {
+    _lobbyIdController.dispose();
+    _passwordController.dispose();
+    _createLobbyIdController.dispose();
+    _createPasswordController.dispose();
+    super.dispose();
+  }
+
+  String _generateLobbyId() {
+    // Generate a 6-character alphanumeric ID
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final random = Random();
+    return String.fromCharCodes(
+      Iterable.generate(
+        6,
+        (_) => chars.codeUnitAt(random.nextInt(chars.length)),
+      ),
+    );
   }
 
   @override
@@ -32,10 +66,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 24),
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: [
-              Color(0xFF11E0DC), // MotoVox theme color
-              Color(0xFFFF6767), // Complementary gradient color
-            ],
+            colors: [Color(0xFF11E0DC), Color(0xFFFF6767)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -44,45 +75,131 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                LucideIcons.radio, // Use a walkie-talkie style icon
-                size: 100,
-                color: Colors.white,
-              ),
+              Icon(LucideIcons.radio, size: 100, color: Colors.white),
               const SizedBox(height: 16),
-
-              const SizedBox(height: 8),
-
-              // Subtitle
               Text(
                 'Walkie-Talkie for Groups',
                 style: TextStyle(fontSize: 18, color: Colors.white70),
               ),
-
               const SizedBox(height: 40),
 
               // Create Lobby Button
               _buildButton(
                 context,
                 icon: LucideIcons.plusCircle,
-                label: 'Create Lobby',
+                label: 'Create Private Lobby',
                 isLoading: _isCreatingLobby,
-                onTap: _createLobby,
+                onTap: _showCreateLobbyDialog,
               ),
-
               const SizedBox(height: 20),
 
               // Join Lobby Button
               _buildButton(
                 context,
                 icon: LucideIcons.radioTower,
-                label: 'Join Lobby',
+                label: 'Join Private Lobby',
                 isLoading: _isJoiningLobby,
-                onTap: _joinLobby,
+                onTap: _showJoinLobbyDialog,
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showCreateLobbyDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("Create Private Lobby"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _createLobbyIdController,
+              decoration: InputDecoration(
+                labelText: "Lobby ID",
+                hintText: "Enter unique lobby ID",
+                border: OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: Icon(Icons.refresh),
+                  onPressed: () {
+                    _createLobbyIdController.text = _generateLobbyId();
+                  },
+                ),
+              ),
+            ),
+            SizedBox(height: 16),
+            TextField(
+              controller: _createPasswordController,
+              decoration: InputDecoration(
+                labelText: "Password (Optional)",
+                hintText: "Set a password for extra security",
+                border: OutlineInputBorder(),
+              ),
+              obscureText: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _createLobby();
+            },
+            child: Text("Create Lobby"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showJoinLobbyDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("Join Private Lobby"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _lobbyIdController,
+              decoration: InputDecoration(
+                labelText: "Lobby ID",
+                hintText: "Enter lobby ID",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            SizedBox(height: 16),
+            TextField(
+              controller: _passwordController,
+              decoration: InputDecoration(
+                labelText: "Password",
+                hintText: "Enter lobby password",
+                border: OutlineInputBorder(),
+              ),
+              obscureText: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _joinLobby();
+            },
+            child: Text("Join Lobby"),
+          ),
+        ],
       ),
     );
   }
@@ -93,12 +210,27 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
     setState(() => _isCreatingLobby = true);
 
     try {
-      String hostIp = await networkService.startHosting();
+      String lobbyId = _createLobbyIdController.text.trim();
+      String password = _createPasswordController.text.trim();
+
+      if (lobbyId.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Please enter a lobby ID")));
+        return;
+      }
+
+      String hostIp = await networkService.startHosting(
+        lobbyId: lobbyId,
+        password: password,
+      );
+
       if (mounted) {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (context) => LobbyScreen(isHost: true, hostIp: hostIp),
+            builder: (context) =>
+                LobbyScreen(isHost: true, hostIp: hostIp, lobbyId: lobbyId),
           ),
         );
       }
@@ -122,7 +254,23 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
     _showLoadingDialog(context);
 
     try {
-      String? hostAddress = await networkService.findHost();
+      String lobbyId = _lobbyIdController.text.trim();
+      String password = _passwordController.text.trim();
+
+      if (lobbyId.isEmpty) {
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text("Please enter a lobby ID")));
+        }
+        return;
+      }
+
+      String? hostAddress = await networkService.findHost(
+        lobbyId: lobbyId,
+        password: password,
+      );
 
       if (mounted) {
         Navigator.pop(context); // Close loading dialog
@@ -131,14 +279,17 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
-              builder: (context) =>
-                  LobbyScreen(isHost: false, hostIp: hostAddress),
+              builder: (context) => LobbyScreen(
+                isHost: false,
+                hostIp: hostAddress,
+                lobbyId: lobbyId,
+              ),
             ),
           );
         } else {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text("No lobbies found.")));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Lobby not found or invalid credentials")),
+          );
         }
       }
     } catch (e) {
@@ -155,8 +306,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
     }
   }
 
-  // Custom Button Widget
-  // Updated button with loading state
+  // Custom Button Widget (unchanged)
   Widget _buildButton(
     BuildContext context, {
     required IconData icon,
@@ -243,7 +393,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
                     CircularProgressIndicator(color: Color(0xFF11E0DC)),
                     const SizedBox(height: 16),
                     Text(
-                      "Searching for lobbies...",
+                      "Joining lobby...",
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w500,

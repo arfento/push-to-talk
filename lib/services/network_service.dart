@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:math';
 import 'package:udp/udp.dart';
 
 class NetworkService {
@@ -7,8 +8,15 @@ class NetworkService {
   UDP? _udpSender;
   UDP? _udpReceiver;
   StreamSubscription? _udpSubscription;
+  Timer? _broadcastTimer;
 
-  Future<String> startHosting() async {
+  // Store active lobbies for validation (in a real app, use a proper database)
+  final Map<String, String> _activeLobbies = {}; // lobbyId -> password
+
+  Future<String> startHosting({
+    required String lobbyId,
+    String password = '',
+  }) async {
     _udpSender = await UDP.bind(Endpoint.any());
     _udpReceiver = await UDP.bind(Endpoint.any(port: Port(discoveryPort)));
 
@@ -16,68 +24,89 @@ class NetworkService {
     if (localIp == null) {
       throw Exception("Could not determine local IP");
     }
-    print("🔵 [HOST] Hosting Lobby...");
+
+    // Store this lobby in active lobbies
+    _activeLobbies[lobbyId] = password;
+
+    print("🔵 [HOST] Hosting Private Lobby...");
     print("🔹 Local IP: $localIp");
+    print("🔹 Lobby ID: $lobbyId");
+    print("🔹 Password Protected: ${password.isNotEmpty}");
     print("🔹 Broadcasting on port: $discoveryPort");
 
-    Timer.periodic(Duration(seconds: 2), (timer) async {
-      String response = "MotoVox_RESPONSE|$localIp"; // ✅ Include host IP
+    // Broadcast lobby availability periodically
+    _broadcastTimer = Timer.periodic(Duration(seconds: 2), (timer) async {
+      String response =
+          "MotoVox_RESPONSE|$localIp|$lobbyId|${password.isNotEmpty ? '1' : '0'}";
       int sentBytes = await _udpSender!.send(
         response.codeUnits,
-        Endpoint.broadcast(port: Port(discoveryPort)), // ✅ Explicit broadcast
+        Endpoint.broadcast(port: Port(discoveryPort)),
       );
-      print(
-        "✅ [HOST] Sent $sentBytes bytes to 192.168.39.255:$discoveryPort with message: $response",
-      );
+      print("✅ [HOST] Broadcasting lobby: $lobbyId");
     });
 
+    // Listen for discovery requests
     _udpReceiver!.asStream().listen((datagram) {
-      if (datagram == null || datagram.data.isEmpty) {
-        print("⚠️ [HOST] Received empty or null datagram, ignoring...");
-        return;
-      }
+      if (datagram == null || datagram.data.isEmpty) return;
 
-      String message = String.fromCharCodes(datagram.data); // ✅ Now safe
-      String senderIp = datagram.address.address; // ✅ Extract sender IP safely
+      String message = String.fromCharCodes(datagram.data);
+      String senderIp = datagram.address.address;
 
       print("📩 [HOST] Received: $message from $senderIp");
 
-      if (message == "MotoVox_DISCOVER") {
-        print("📡 [HOST] Responding to discovery request...");
-        String response = "MotoVox_RESPONSE|$localIp";
-        _udpSender!.send(
-          response.codeUnits,
-          Endpoint.unicast(
-            InternetAddress(senderIp),
-            port: Port(discoveryPort),
-          ),
-        );
+      if (message.startsWith("MotoVox_DISCOVER|")) {
+        // Parse discovery request
+        List<String> parts = message.split('|');
+        if (parts.length >= 3) {
+          String requestedLobbyId = parts[1];
+          String providedPassword = parts.length > 3 ? parts[3] : '';
+
+          // Validate lobby access
+          if (_validateLobbyAccess(requestedLobbyId, providedPassword)) {
+            print(
+              "📡 [HOST] Valid access request for lobby: $requestedLobbyId",
+            );
+            String response =
+                "MotoVox_RESPONSE|$localIp|$lobbyId|${password.isNotEmpty ? '1' : '0'}";
+            _udpSender!.send(
+              response.codeUnits,
+              Endpoint.unicast(
+                InternetAddress(senderIp),
+                port: Port(discoveryPort),
+              ),
+            );
+          } else {
+            print(
+              "🚫 [HOST] Invalid access attempt for lobby: $requestedLobbyId",
+            );
+          }
+        }
       }
     });
+
     return localIp;
   }
 
-  Future<String?> findHost() async {
+  Future<String?> findHost({
+    required String lobbyId,
+    String password = '',
+  }) async {
     _udpReceiver = await UDP.bind(Endpoint.any(port: Port(discoveryPort)));
 
-    print("🔍 [CLIENT] Listening for lobbies on port $discoveryPort...");
+    print("🔍 [CLIENT] Searching for private lobby: $lobbyId");
 
     Completer<String?> completer = Completer<String?>();
-    Set<String> discoveredHosts = {}; // Store multiple hosts
-
-    // ✅ Get client’s own local IP
+    Set<String> discoveredHosts = {};
     String? myIp = await getLocalIp();
     print("🟢 [CLIENT] My IP: $myIp");
 
-    // ✅ Get broadcast address
     String? broadcastIp = await getBroadcastAddress();
     if (broadcastIp == null) {
       print("❌ [CLIENT] Could not determine broadcast address");
       return null;
     }
-    print(
-      "📢 [CLIENT] Sending discovery requests to $broadcastIp:$discoveryPort",
-    );
+
+    print("📢 [CLIENT] Sending discovery for lobby: $lobbyId");
 
     _udpSubscription = _udpReceiver!.asStream().listen((datagram) {
       if (datagram != null) {
@@ -92,39 +121,98 @@ class NetworkService {
         print("✅ [CLIENT] Received: $message from $senderIp");
 
         if (message.startsWith("MotoVox_RESPONSE|")) {
-          String hostIp = message.split("|")[1];
-          discoveredHosts.add(hostIp);
+          List<String> parts = message.split('|');
+          if (parts.length >= 4) {
+            String hostIp = parts[1];
+            String responseLobbyId = parts[2];
+            bool requiresPassword = parts[3] == '1';
+
+            // Only accept responses for the specific lobby we're looking for
+            if (responseLobbyId == lobbyId) {
+              print("🎯 [CLIENT] Found our target lobby: $lobbyId");
+              discoveredHosts.add(hostIp);
+            } else {
+              print("🔍 [CLIENT] Ignoring other lobby: $responseLobbyId");
+            }
+          }
         }
       }
     });
 
-    // ✅ Send multiple discovery requests for better reliability
+    // Send discovery requests with lobby ID and password
     UDP sender = await UDP.bind(Endpoint.any());
 
     for (int i = 0; i < 5; i++) {
-      // Retry 5 times
+      String discoveryMessage = "MotoVox_DISCOVER|$lobbyId|$password";
       int sentBytes = await sender.send(
-        "MotoVox_DISCOVER".codeUnits,
+        discoveryMessage.codeUnits,
         Endpoint.broadcast(port: Port(discoveryPort)),
       );
-      print("📢 [CLIENT] Sent $sentBytes bytes to $broadcastIp:$discoveryPort");
-      await Future.delayed(Duration(seconds: 2)); // Wait before retrying
+      print(
+        "📢 [CLIENT] Sent discovery attempt ${i + 1}/5 for lobby: $lobbyId",
+      );
+      await Future.delayed(Duration(seconds: 2));
     }
 
     sender.close();
 
     return completer.future.timeout(
-      Duration(seconds: 2),
+      Duration(seconds: 12),
       onTimeout: () {
+        _udpSubscription?.cancel();
+        _udpReceiver?.close();
+
         if (discoveredHosts.isNotEmpty) {
           String selectedHost = discoveredHosts.first;
-          print("✅ [CLIENT] Selecting host: $selectedHost");
+          print("✅ [CLIENT] Successfully joined lobby: $lobbyId");
+          print("🔗 [CLIENT] Connecting to host: $selectedHost");
           return selectedHost;
         }
-        print("❌ No lobby found within timeout.");
+        print("❌ Lobby '$lobbyId' not found or invalid credentials");
         return null;
       },
     );
+  }
+
+  bool _validateLobbyAccess(String lobbyId, String providedPassword) {
+    if (!_activeLobbies.containsKey(lobbyId)) {
+      print("🚫 [HOST] Lobby not found: $lobbyId");
+      return false;
+    }
+
+    String storedPassword = _activeLobbies[lobbyId]!;
+
+    // If lobby has no password, allow access
+    if (storedPassword.isEmpty) {
+      return true;
+    }
+
+    // If lobby has password, validate it
+    if (providedPassword == storedPassword) {
+      return true;
+    } else {
+      print("🚫 [HOST] Invalid password for lobby: $lobbyId");
+      return false;
+    }
+  }
+
+  // Generate a random lobby ID
+  String generateLobbyId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final random = Random();
+    return String.fromCharCodes(
+      Iterable.generate(
+        6,
+        (_) => chars.codeUnitAt(random.nextInt(chars.length)),
+      ),
+    );
+  }
+
+  // Remove lobby when host disconnects
+  void removeLobby(String lobbyId) {
+    _activeLobbies.remove(lobbyId);
+    _broadcastTimer?.cancel();
+    print("🗑️ [HOST] Removed lobby: $lobbyId");
   }
 
   Future<String?> getBroadcastAddress() async {
@@ -133,20 +221,14 @@ class NetworkService {
         if (addr.type == InternetAddressType.IPv4 &&
             (addr.address.startsWith("172.16.") ||
                 addr.address.startsWith("192.168."))) {
-          // Ensure it's a WiFi IP
-          print(
-            "🔍 Found WiFi IP: ${addr.address} on interface: ${interface.name}",
-          );
           List<String> parts = addr.address.split('.');
           if (parts.length == 4) {
             String broadcastIp = "${parts[0]}.${parts[1]}.${parts[2]}.255";
-            print("📢 Using Correct Broadcast IP: $broadcastIp");
             return broadcastIp;
           }
         }
       }
     }
-    print("❌ Could not determine correct broadcast address.");
     return null;
   }
 
@@ -156,7 +238,6 @@ class NetworkService {
         if (addr.type == InternetAddressType.IPv4 &&
             (addr.address.startsWith("172.16.") ||
                 addr.address.startsWith("192.168."))) {
-          // Ensure it's a WiFi IP
           return addr.address;
         }
       }
@@ -165,8 +246,10 @@ class NetworkService {
   }
 
   void dispose() {
+    _broadcastTimer?.cancel();
     _udpSender?.close();
     _udpReceiver?.close();
     _udpSubscription?.cancel();
+    _activeLobbies.clear();
   }
 }

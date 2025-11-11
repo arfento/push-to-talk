@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:push_to_talk_app/firebase_options.dart';
 import 'package:push_to_talk_app/utils/constants/constants.dart';
+import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/record_screen/audio_record_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/record_screen/cubit/record_cubit.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/recordings_list/cubit/files_cubit.dart';
@@ -66,6 +67,7 @@ class MyApp extends StatelessWidget {
           VideoHomePage.id: (context) => VideoHomePage(),
           AudioRecordScreen.routeName: (context) => AudioRecordScreen(),
           RecordingsListScreen.routeName: (context) => RecordingsListScreen(),
+          RadioStreamingScreen.routeName: (context) => RadioStreamingScreen(),
         },
         onGenerateRoute: (settings) {
           if (settings.name == LobbyScreen.id) {
@@ -75,6 +77,7 @@ class MyApp extends StatelessWidget {
                 return LobbyScreen(
                   isHost: args['isHost'] as bool,
                   hostIp: args['hostIp'] as String,
+                  lobbyId: args['lobbyId'] as String,
                 );
               },
             );
