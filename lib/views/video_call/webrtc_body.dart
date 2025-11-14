@@ -32,27 +32,27 @@ class WebRTCBody extends StatelessWidget {
       child: Column(
         children: [
           // Room ID input
-          Container(
-            margin: const EdgeInsets.all(8.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text("Join room ID: "),
-                Flexible(
-                  child: TextFormField(
-                    controller: controller,
-                    decoration: InputDecoration(
-                      suffixIcon: IconButton(
-                        tooltip: 'Generate new Room ID',
-                        icon: const Icon(Icons.generating_tokens_outlined),
-                        onPressed: () => controller.text = const Uuid().v4(),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          // Container(
+          //   margin: const EdgeInsets.all(8.0),
+          //   child: Row(
+          //     mainAxisAlignment: MainAxisAlignment.center,
+          //     children: [
+          //       const Text("Join room ID: "),
+          //       Flexible(
+          //         child: TextFormField(
+          //           controller: controller,
+          //           decoration: InputDecoration(
+          //             suffixIcon: IconButton(
+          //               tooltip: 'Generate new Room ID',
+          //               icon: const Icon(Icons.generating_tokens_outlined),
+          //               onPressed: () => controller.text = const Uuid().v4(),
+          //             ),
+          //           ),
+          //         ),
+          //       ),
+          //     ],
+          //   ),
+          // ),
 
           // Streaming views
           Expanded(

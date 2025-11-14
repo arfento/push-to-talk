@@ -76,7 +76,7 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
       setState(() => remoteRenderers[peerUuid] = remoteRenderer);
     };
 
-    signaling.onRemoveRemoteStream = (peerUuid, displayName) {
+    signaling.onRemoveRemoteStream = (peerUuid, displayName) async {
       if (remoteRenderers.containsKey(peerUuid)) {
         remoteRenderers[peerUuid]!.srcObject = null;
         remoteRenderers[peerUuid]!.dispose();
@@ -85,6 +85,13 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
           remoteRenderers.remove(peerUuid);
           remoteRenderersLoading.remove(peerUuid);
         });
+      }
+
+      // 👇 if no more remote users remain, auto hang up
+      if (remoteRenderers.isEmpty && mounted) {
+        await hangUp(false); // cleanup local stream
+        if (mounted) Navigator.pop(context); // back to previous screen
+        SnackMsg.showInfo(context, 'the call has ended');
       }
     };
 
@@ -96,14 +103,18 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
       setState(() => remoteRenderersLoading[peerUuid] = true);
     };
 
-    signaling.onConnectionError = (peerUuid, displayName) {
+    signaling.onConnectionError = (peerUuid, displayName) async {
       SnackMsg.showError(context, 'Connection failed with $displayName');
       error = true;
+      await hangUp(false);
+      if (mounted) Navigator.pop(context);
     };
 
-    signaling.onGenericError = (errorText) {
+    signaling.onGenericError = (errorText) async {
       SnackMsg.showError(context, errorText);
       error = true;
+      await hangUp(false);
+      if (mounted) Navigator.pop(context);
     };
 
     // final uri = Uri.base;
@@ -217,32 +228,32 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
           runSpacing: 15,
           children: [
             if (roomIdController.text.length > 2) ...[
-              FloatingActionButton(
-                tooltip: 'Share room link',
-                backgroundColor: Colors.blueAccent,
-                child: const Icon(Icons.share),
-                onPressed: () async {
-                  final roomUrl =
-                      'https://0.0.0.0:8080?roomId=${roomIdController.text}';
+              //               FloatingActionButton(
+              //                 tooltip: 'Share room link',
+              //                 backgroundColor: Colors.blueAccent,
+              //                 child: const Icon(Icons.share),
+              //                 onPressed: () async {
+              //                   final roomUrl =
+              //                       'https://0.0.0.0:8080?roomId=${roomIdController.text}';
 
-                  final shareText =
-                      '''
-Join my WebRTC room
+              //                   final shareText =
+              //                       '''
+              // Join my WebRTC room
 
-Room ID: ${roomIdController.text}
-Link: $roomUrl
-''';
+              // Room ID: ${roomIdController.text}
+              // Link: $roomUrl
+              // ''';
 
-                  await Clipboard.setData(ClipboardData(text: shareText));
+              //                   await Clipboard.setData(ClipboardData(text: shareText));
 
-                  if (mounted) {
-                    SnackMsg.showInfo(
-                      context,
-                      'Room link copied to clipboard!',
-                    );
-                  }
-                },
-              ),
+              //                   if (mounted) {
+              //                     SnackMsg.showInfo(
+              //                       context,
+              //                       'Room link copied to clipboard!',
+              //                     );
+              //                   }
+              //                 },
+              //               ),
             ],
             if (localRenderOk) ...[
               if (signaling.isJoined() &&
@@ -299,36 +310,42 @@ Link: $roomUrl
                 ),
               ],
               if (localRenderOk && signaling.isJoined()) ...[
-                FloatingActionButton(
-                  tooltip: signaling.isScreenSharing()
-                      ? 'Change screen sharing'
-                      : 'Start screen sharing',
-                  backgroundColor: signaling.isScreenSharing()
-                      ? Colors.amber
-                      : Colors.grey,
-                  child: const Icon(Icons.screen_share_outlined),
-                  onPressed: () async =>
-                      await doTry(runAsync: () => signaling.screenSharing()),
-                ),
-                if (signaling.isScreenSharing()) ...[
-                  FloatingActionButton(
-                    tooltip: 'Stop screen sharing',
-                    backgroundColor: Colors.redAccent,
-                    child: const Icon(Icons.stop_screen_share_outlined),
-                    onPressed: () => signaling.stopScreenSharing(),
-                  ),
-                ],
+                // FloatingActionButton(
+                //   tooltip: signaling.isScreenSharing()
+                //       ? 'Change screen sharing'
+                //       : 'Start screen sharing',
+                //   backgroundColor: signaling.isScreenSharing()
+                //       ? Colors.amber
+                //       : Colors.grey,
+                //   child: const Icon(Icons.screen_share_outlined),
+                //   onPressed: () async =>
+                //       await doTry(runAsync: () => signaling.screenSharing()),
+                // ),
+                // if (signaling.isScreenSharing()) ...[
+                //   FloatingActionButton(
+                //     tooltip: 'Stop screen sharing',
+                //     backgroundColor: Colors.redAccent,
+                //     child: const Icon(Icons.stop_screen_share_outlined),
+                //     onPressed: () => signaling.stopScreenSharing(),
+                //   ),
+                // ],
+                // FloatingActionButton(
+                //   tooltip: 'Hangup',
+                //   backgroundColor: Colors.red,
+                //   child: const Icon(Icons.call_end),
+                //   onPressed: () {
+                //     Navigator.pop(context);
+                //     hangUp(false);
+                //   },
+                // ),
                 FloatingActionButton(
                   tooltip: 'Hangup',
                   backgroundColor: Colors.red,
                   child: const Icon(Icons.call_end),
-                  onPressed: () => hangUp(false),
-                ),
-                FloatingActionButton(
-                  tooltip: 'Exit',
-                  backgroundColor: Colors.red,
-                  child: const Icon(Icons.exit_to_app),
-                  onPressed: () => hangUp(true),
+                  onPressed: () async {
+                    await hangUp(false); // cleanup WebRTC
+                    if (mounted) Navigator.pop(context); // safely go back
+                  },
                 ),
               ] else ...[
                 FloatingActionButton(
@@ -337,7 +354,11 @@ Link: $roomUrl
                   child: const Icon(Icons.call),
                   onPressed: () async => await doTry(
                     runAsync: () => join(),
-                    onError: () => hangUp(false),
+                    onError: () {
+                      Navigator.pop(context);
+
+                      hangUp(false);
+                    },
                   ),
                 ),
               ],

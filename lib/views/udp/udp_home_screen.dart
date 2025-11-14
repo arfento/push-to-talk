@@ -23,13 +23,13 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
 
   // Controllers for input fields
   final TextEditingController _lobbyIdController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  // final TextEditingController _passwordController = TextEditingController();
 
   // For creating lobby
   final TextEditingController _createLobbyIdController =
       TextEditingController();
-  final TextEditingController _createPasswordController =
-      TextEditingController();
+  // final TextEditingController _createPasswordController =
+  //     TextEditingController();
 
   @override
   void initState() {
@@ -41,9 +41,9 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
   @override
   void dispose() {
     _lobbyIdController.dispose();
-    _passwordController.dispose();
+    // _passwordController.dispose();
     _createLobbyIdController.dispose();
-    _createPasswordController.dispose();
+    // _createPasswordController.dispose();
     super.dispose();
   }
 
@@ -130,16 +130,16 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
                 ),
               ),
             ),
-            SizedBox(height: 16),
-            TextField(
-              controller: _createPasswordController,
-              decoration: InputDecoration(
-                labelText: "Password (Optional)",
-                hintText: "Set a password for extra security",
-                border: OutlineInputBorder(),
-              ),
-              obscureText: true,
-            ),
+            // SizedBox(height: 16),
+            // TextField(
+            //   controller: _createPasswordController,
+            //   decoration: InputDecoration(
+            //     labelText: "Password (Optional)",
+            //     hintText: "Set a password for extra security",
+            //     border: OutlineInputBorder(),
+            //   ),
+            //   obscureText: true,
+            // ),
           ],
         ),
         actions: [
@@ -175,16 +175,16 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
                 border: OutlineInputBorder(),
               ),
             ),
-            SizedBox(height: 16),
-            TextField(
-              controller: _passwordController,
-              decoration: InputDecoration(
-                labelText: "Password",
-                hintText: "Enter lobby password",
-                border: OutlineInputBorder(),
-              ),
-              obscureText: true,
-            ),
+            // SizedBox(height: 16),
+            // TextField(
+            //   controller: _passwordController,
+            //   decoration: InputDecoration(
+            //     labelText: "Password",
+            //     hintText: "Enter lobby password",
+            //     border: OutlineInputBorder(),
+            //   ),
+            //   obscureText: true,
+            // ),
           ],
         ),
         actions: [
@@ -211,7 +211,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
 
     try {
       String lobbyId = _createLobbyIdController.text.trim();
-      String password = _createPasswordController.text.trim();
+      // String password = _createPasswordController.text.trim();
 
       if (lobbyId.isEmpty) {
         ScaffoldMessenger.of(
@@ -222,7 +222,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
 
       String hostIp = await networkService.startHosting(
         lobbyId: lobbyId,
-        password: password,
+        // password: password,
       );
 
       if (mounted) {
@@ -255,7 +255,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
 
     try {
       String lobbyId = _lobbyIdController.text.trim();
-      String password = _passwordController.text.trim();
+      // String password = _passwordController.text.trim();
 
       if (lobbyId.isEmpty) {
         if (mounted) {
@@ -269,7 +269,7 @@ class _UdpHomeScreenState extends State<UdpHomeScreen> {
 
       String? hostAddress = await networkService.findHost(
         lobbyId: lobbyId,
-        password: password,
+        // password: password,
       );
 
       if (mounted) {

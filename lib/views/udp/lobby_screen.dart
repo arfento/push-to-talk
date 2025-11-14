@@ -7,7 +7,9 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:push_to_talk_app/bloc/camera_bloc.dart';
+import 'package:push_to_talk_app/services/background_cleanup_service.dart';
 import 'package:push_to_talk_app/services/network_service.dart';
 import 'package:push_to_talk_app/utils/camera_utils.dart';
 import 'package:push_to_talk_app/utils/permission_utils.dart';
@@ -88,10 +90,18 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   // Voice playing variables
   VoiceRecording? _currentlyPlayingRecording;
 
+  //
+  bool _isInBackground = false;
+  DateTime? _backgroundTime;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    BackgroundCleanupService.initialize().then((_) {
+      print("✅ Background service initialized");
+    });
 
     getLocalIp();
     _audioRecorder = FlutterSoundRecorder();
@@ -122,6 +132,63 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       _startTcpServer();
     }
     _connectToTcpServer();
+  }
+
+  @override
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    print("🔄 App Lifecycle State: $state");
+
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        // App masuk background
+        _isInBackground = true;
+        _backgroundTime = DateTime.now();
+        log("📱 App masuk background at $_backgroundTime");
+        break;
+
+      case AppLifecycleState.resumed:
+        // App kembali ke foreground
+        _isInBackground = false;
+        _backgroundTime = null;
+        log("📱 App kembali ke foreground");
+        break;
+
+      case AppLifecycleState.detached:
+        // App benar-benar di-close
+        log("❌ App di-DETACHED - cleaning up");
+        _handleAppBackgroundOrClosed();
+        break;
+
+      case AppLifecycleState.hidden:
+        log("📱 App HIDDEN");
+        break;
+    }
+  }
+
+  void _handleAppBackgroundOrClosed() async {
+    if (_isDisposed) return;
+
+    print("🚨 APP CLOSED - Starting cleanup process");
+
+    print("🔄 App going to background or closing, cleaning up...");
+
+    // Notify via background service
+    await BackgroundCleanupService.notifyUserLeft(
+      widget.hostIp,
+      widget.isHost,
+      _myIpAddress,
+      connectedUsers,
+    );
+
+    await Future.delayed(Duration(milliseconds: 500));
+
+    await _cleanupAndLeave();
+
+    print("✅ App closed cleanup completed");
   }
 
   Future<String?> getLocalIp() async {
@@ -241,18 +308,39 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
           Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
         );
         sender.close();
+        print("📤 [CLIENT] Sent leave notification to host");
       } catch (e) {
         print("❌ Error sending leave message: $e");
+      }
+    } else if (widget.isHost) {
+      // Host should notify all clients that they're leaving
+      try {
+        for (String ip in connectedUsers) {
+          if (ip != _myIpAddress) {
+            UDP sender = await UDP.bind(Endpoint.any());
+            await sender.send(
+              Uint8List.fromList("HOST_LEAVING".codeUnits),
+              Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
+            );
+            sender.close();
+          }
+        }
+        print("📤 [HOST] Notified all clients about host leaving");
+      } catch (e) {
+        print("❌ Error notifying clients: $e");
       }
     }
 
     // Cleanup audio resources first
     try {
       _silenceTimer?.cancel();
+      // _userCleanupTimer?.cancel();
       // await _stopPlayerForStream();
+      await _audioRecorder?.stopRecorder();
+      await _audioPlayer?.stopPlayer();
       await _audioRecorder?.closeRecorder();
       await _audioPlayer?.closePlayer();
-      _audioStreamController?.close();
+      await _audioStreamController?.close();
     } catch (e) {
       print("❌ Error cleaning up audio resources: $e");
     }
@@ -294,9 +382,36 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initAudio() async {
-    await _audioRecorder!.openRecorder();
-    await _audioPlayer!.openPlayer();
+    _audioPlayer!.openPlayer().then((value) async {
+      // setState(() {
+      //   _mPlayerIsInited = true;
+      // });
+      await _openRecorder();
+    });
+    // await _audioRecorder!.openRecorder();
+    // await _audioPlayer!.openPlayer();
     await _startPlayerForStream(); // Initial setup
+  }
+
+  Future<void> _openRecorder() async {
+    var status = await Permission.microphone.request();
+    if (status != PermissionStatus.granted) {
+      throw RecordingPermissionException('Microphone permission not granted');
+    }
+    await _audioRecorder!.openRecorder();
+    // _recorderSubscription = _audioRecorder!.onProgress!.listen((e) {
+    //   // pos = e.duration.inMilliseconds; // We do not need this information in this example.
+    //   setState(() {
+    //     _dbLevel = e.decibels as double;
+    //   });
+    // });
+    await _audioRecorder!.setSubscriptionDuration(
+      const Duration(milliseconds: 100),
+    ); // DO NOT FORGET THIS CALL !!!
+
+    // setState(() {
+    //   _mRecorderIsInited = true;
+    // });
   }
 
   void _listenForVideoStream() async {
@@ -750,7 +865,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       print("📥 Received audio chunk size: ${audioData.length}");
 
-      await _audioPlayer!.feedUint8FromStream(audioData);
+      _audioPlayer!.uint8ListSink!.add(audioData);
     } catch (e) {
       print("❌ [AUDIO] Error processing audio: $e");
     }
@@ -1191,6 +1306,10 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             backgroundColor: Colors.red,
           ),
         );
+      if (widget.isHost) {
+        _startTcpServer();
+      }
+      _connectToTcpServer();
       return;
     }
 
@@ -1436,6 +1555,17 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.center,
+                              child: Text(
+                                "Lobby : ${widget.lobbyId}",
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                textAlign: TextAlign.right,
                               ),
                             ),
                             SizedBox(height: 8),
@@ -2049,20 +2179,15 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
 
-    // _keepAliveTimer?.cancel();
-    _cleanupAndLeave(); // Use the cleanup method
+    BackgroundCleanupService.notifyUserLeft(
+      widget.hostIp,
+      widget.isHost,
+      _myIpAddress,
+      connectedUsers,
+    );
 
-    // udpSocket?.close();
-    // _audioRecorder?.closeRecorder();
-    // _audioPlayer?.closePlayer();
-    // _audioStreamController?.close();
-    // _progressController?.close();
-    // _connectedUsersNotifier.dispose();
+    _cleanupAndLeave();
 
-    // for (Socket client in _tcpClients) {
-    //   client.destroy();
-    // }
-    // _tcpServer?.close();
     if (widget.isHost) {
       networkService.removeLobby(widget.lobbyId);
     }

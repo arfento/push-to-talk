@@ -64,6 +64,7 @@ dependencies:
   flutter_webrtc: ^1.2.0
   intl: ^0.20.2
   just_audio: ^0.10.5
+  flutter_background_service: ^5.1.0
 
 dev_dependencies:
   flutter_test:

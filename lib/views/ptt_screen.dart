@@ -120,38 +120,38 @@ class _PTTScreenState extends State<PTTScreen>
                       Navigator.pushNamed(context, UdpHomeScreen.id);
                     },
                   ),
-                  SizedBox(height: 16),
-                  ElevatedButton(
-                    child: Text('Record Video', style: kTextStyleFormButton),
-                    style: ElevatedButton.styleFrom(
-                      padding: kPaddingFormButton,
-                      backgroundColor: kColourPrimary,
-                    ),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => VideoHomePage(),
-                        ),
-                      );
-                    },
-                  ),
-                  SizedBox(height: 16),
-                  ElevatedButton(
-                    child: Text('Record Audio', style: kTextStyleFormButton),
-                    style: ElevatedButton.styleFrom(
-                      padding: kPaddingFormButton,
-                      backgroundColor: kColourPrimary,
-                    ),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => RadioStreamingScreen(),
-                        ),
-                      );
-                    },
-                  ),
+                  // SizedBox(height: 16),
+                  // ElevatedButton(
+                  //   child: Text('Record Video', style: kTextStyleFormButton),
+                  //   style: ElevatedButton.styleFrom(
+                  //     padding: kPaddingFormButton,
+                  //     backgroundColor: kColourPrimary,
+                  //   ),
+                  //   onPressed: () {
+                  //     Navigator.push(
+                  //       context,
+                  //       MaterialPageRoute(
+                  //         builder: (context) => VideoHomePage(),
+                  //       ),
+                  //     );
+                  //   },
+                  // ),
+                  // SizedBox(height: 16),
+                  // ElevatedButton(
+                  //   child: Text('Record Audio', style: kTextStyleFormButton),
+                  //   style: ElevatedButton.styleFrom(
+                  //     padding: kPaddingFormButton,
+                  //     backgroundColor: kColourPrimary,
+                  //   ),
+                  //   onPressed: () {
+                  //     Navigator.push(
+                  //       context,
+                  //       MaterialPageRoute(
+                  //         builder: (context) => RadioStreamingScreen(),
+                  //       ),
+                  //     );
+                  //   },
+                  // ),
                 ],
               ),
             ],
