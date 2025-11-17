@@ -99,9 +99,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    BackgroundCleanupService.initialize().then((_) {
-      print("✅ Background service initialized");
-    });
+    // BackgroundCleanupService.initialize().then((_) {
+    //   print("✅ Background service initialized");
+    // });
 
     getLocalIp();
     _audioRecorder = FlutterSoundRecorder();
@@ -177,12 +177,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     print("🔄 App going to background or closing, cleaning up...");
 
     // Notify via background service
-    await BackgroundCleanupService.notifyUserLeft(
-      widget.hostIp,
-      widget.isHost,
-      _myIpAddress,
-      connectedUsers,
-    );
+    // await BackgroundCleanupService.notifyUserLeft(
+    //   widget.hostIp,
+    //   widget.isHost,
+    //   _myIpAddress,
+    //   connectedUsers,
+    // );
 
     await Future.delayed(Duration(milliseconds: 500));
 
@@ -382,7 +382,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initAudio() async {
-    _audioPlayer!.openPlayer().then((value) async {
+    await _audioPlayer?.openPlayer().then((value) async {
       // setState(() {
       //   _mPlayerIsInited = true;
       // });
@@ -717,7 +717,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   Future<void> _startPlayerForStream() async {
     if (!_isPlayerReady) {
-      await _audioPlayer!.startPlayerFromStream(
+      await _audioPlayer?.startPlayerFromStream(
         codec: Codec.pcm16,
         numChannels: 2,
         sampleRate: Platform.isIOS ? 44100 : 16000,
@@ -734,7 +734,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   Future<void> _stopPlayerForStream() async {
     if (_isPlayerReady) {
-      await _audioPlayer!.stopPlayer();
+      await _audioPlayer?.stopPlayer();
       _isPlayerReady = false;
       print("🛑 [CLIENT] Player stopped");
     }
@@ -865,7 +865,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       print("📥 Received audio chunk size: ${audioData.length}");
 
-      _audioPlayer!.uint8ListSink!.add(audioData);
+      _audioPlayer?.uint8ListSink!.add(audioData);
     } catch (e) {
       print("❌ [AUDIO] Error processing audio: $e");
     }
@@ -2179,12 +2179,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
 
-    BackgroundCleanupService.notifyUserLeft(
-      widget.hostIp,
-      widget.isHost,
-      _myIpAddress,
-      connectedUsers,
-    );
+    // BackgroundCleanupService.notifyUserLeft(
+    //   widget.hostIp,
+    //   widget.isHost,
+    //   _myIpAddress,
+    //   connectedUsers,
+    // );
 
     _cleanupAndLeave();
 

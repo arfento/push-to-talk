@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:push_to_talk_app/firebase_options.dart';
 import 'package:push_to_talk_app/utils/constants/constants.dart';
+import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/pcm_streaming_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/record_screen/audio_record_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/record_screen/cubit/record_cubit.dart';
@@ -68,6 +69,7 @@ class MyApp extends StatelessWidget {
           AudioRecordScreen.routeName: (context) => AudioRecordScreen(),
           RecordingsListScreen.routeName: (context) => RecordingsListScreen(),
           RadioStreamingScreen.routeName: (context) => RadioStreamingScreen(),
+          PCMStreamingScreen.routeName: (context) => PCMStreamingScreen(),
         },
         onGenerateRoute: (settings) {
           if (settings.name == LobbyScreen.id) {

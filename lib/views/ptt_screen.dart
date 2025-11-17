@@ -1,6 +1,7 @@
 import 'package:animated_text_kit/animated_text_kit.dart';
 import 'package:flutter/material.dart';
 import 'package:push_to_talk_app/utils/constants/constants.dart';
+import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/pcm_streaming_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
 import 'package:push_to_talk_app/views/audio_record/screens/record_screen/audio_record_screen.dart';
 import 'package:push_to_talk_app/views/udp/udp_home_screen.dart';
@@ -136,22 +137,22 @@ class _PTTScreenState extends State<PTTScreen>
                   //     );
                   //   },
                   // ),
-                  // SizedBox(height: 16),
-                  // ElevatedButton(
-                  //   child: Text('Record Audio', style: kTextStyleFormButton),
-                  //   style: ElevatedButton.styleFrom(
-                  //     padding: kPaddingFormButton,
-                  //     backgroundColor: kColourPrimary,
-                  //   ),
-                  //   onPressed: () {
-                  //     Navigator.push(
-                  //       context,
-                  //       MaterialPageRoute(
-                  //         builder: (context) => RadioStreamingScreen(),
-                  //       ),
-                  //     );
-                  //   },
-                  // ),
+                  SizedBox(height: 16),
+                  ElevatedButton(
+                    child: Text('Record Audio', style: kTextStyleFormButton),
+                    style: ElevatedButton.styleFrom(
+                      padding: kPaddingFormButton,
+                      backgroundColor: kColourPrimary,
+                    ),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => PCMStreamingScreen(),
+                        ),
+                      );
+                    },
+                  ),
                 ],
               ),
             ],

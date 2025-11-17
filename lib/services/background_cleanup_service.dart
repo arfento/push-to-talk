@@ -14,14 +14,17 @@ class BackgroundCleanupService {
 
     await service.configure(
       iosConfiguration: IosConfiguration(
-        autoStart: true,
+        autoStart: false, // Don't auto-start on iOS
         onForeground: onStart,
-        // onBackground: onStart,
       ),
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
-        autoStart: true,
-        isForegroundMode: false,
+        autoStart: false, // Don't auto-start on Android
+        isForegroundMode: true,
+        notificationChannelId: 'walkie_channel',
+        initialNotificationTitle: 'Walkie-Talkie Active',
+        initialNotificationContent: 'Monitoring connections',
+        foregroundServiceNotificationId: 999,
       ),
     );
 
