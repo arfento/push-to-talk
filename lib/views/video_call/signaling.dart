@@ -55,6 +55,23 @@ class Signaling {
     ],
   };
 
+  bool isCallActive() {
+    return _peerConnections.isNotEmpty;
+  }
+
+  Future<bool> hasOtherParticipants() async {
+    if (_appointmentId == null || _localUuid == null) return false;
+
+    final peers = await FirebaseFirestore.instance
+        .collection(collectionVideoCall)
+        .doc(_appointmentId)
+        .collection(tablePeers)
+        .where('uuid', isNotEqualTo: _localUuid)
+        .get();
+
+    return peers.docs.isNotEmpty;
+  }
+
   Future<int> cameraCount() async {
     if (isScreenSharing()) {
       return 0;

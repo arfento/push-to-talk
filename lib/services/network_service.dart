@@ -35,7 +35,7 @@ class NetworkService {
     print("🔹 Broadcasting on port: $discoveryPort");
 
     // Broadcast lobby availability periodically
-    _broadcastTimer = Timer.periodic(Duration(seconds: 2), (timer) async {
+    _broadcastTimer = Timer.periodic(Duration(seconds: 1), (timer) async {
       String response =
           "MotoVox_RESPONSE|$localIp|$lobbyId|${password.isNotEmpty ? '1' : '0'}";
       int sentBytes = await _udpSender!.send(
@@ -142,7 +142,7 @@ class NetworkService {
     // Send discovery requests with lobby ID and password
     UDP sender = await UDP.bind(Endpoint.any());
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 3; i++) {
       String discoveryMessage = "MotoVox_DISCOVER|$lobbyId|$password";
       int sentBytes = await sender.send(
         discoveryMessage.codeUnits,
@@ -151,13 +151,13 @@ class NetworkService {
       print(
         "📢 [CLIENT] Sent discovery attempt ${i + 1}/5 for lobby: $lobbyId",
       );
-      await Future.delayed(Duration(seconds: 2));
+      await Future.delayed(Duration(milliseconds: 500));
     }
 
     sender.close();
 
     return completer.future.timeout(
-      Duration(seconds: 12),
+      Duration(seconds: 6),
       onTimeout: () {
         _udpSubscription?.cancel();
         _udpReceiver?.close();

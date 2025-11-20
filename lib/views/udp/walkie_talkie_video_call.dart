@@ -13,10 +13,13 @@ typedef ExecuteFutureCallback = Future<void> Function();
 class WalkieTalkieVideoCall extends StatefulWidget {
   final String controllerIdCall;
   final String clientIPAdress;
+  final bool isInitiator; // Tambahkan parameter ini
+
   const WalkieTalkieVideoCall({
     super.key,
     required this.controllerIdCall,
     required this.clientIPAdress,
+    this.isInitiator = false,
   });
 
   @override
@@ -46,9 +49,17 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
   bool localRenderOk = false;
   bool error = false;
 
+  bool _isInitiator = false;
+  bool _shouldAutoJoin = false;
+  bool _callStarted = false;
+
   @override
   void initState() {
     super.initState();
+
+    _isInitiator = widget.isInitiator;
+    _shouldAutoJoin = widget.isInitiator;
+
     setState(() {
       roomIdController.text = widget.controllerIdCall;
     });
@@ -125,6 +136,24 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
     // roomIdController.text = roomIdFromUrl;
 
     initCamera();
+
+    if (_shouldAutoJoin) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _autoJoinCall();
+      });
+    }
+  }
+
+  Future<void> _autoJoinCall() async {
+    if (_shouldAutoJoin && !_callStarted && localRenderOk) {
+      await Future.delayed(const Duration(seconds: 1)); // Tunggu sedikit
+      if (mounted) {
+        await join();
+        setState(() {
+          _callStarted = true;
+        });
+      }
+    }
   }
 
   @override
@@ -139,7 +168,15 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
 
   Future<void> initCamera() async {
     await localRenderer.initialize();
-    await doTry(runAsync: () => signaling.openUserMedia());
+    await doTry(
+      runAsync: () async {
+        await signaling.openUserMedia();
+        // Setelah camera ready, auto join jika initiator
+        if (_shouldAutoJoin && !_callStarted) {
+          await _autoJoinCall();
+        }
+      },
+    );
   }
 
   void disposeRemoteRenderers() {
@@ -309,58 +346,87 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
                   ),
                 ),
               ],
-              if (localRenderOk && signaling.isJoined()) ...[
-                // FloatingActionButton(
-                //   tooltip: signaling.isScreenSharing()
-                //       ? 'Change screen sharing'
-                //       : 'Start screen sharing',
-                //   backgroundColor: signaling.isScreenSharing()
-                //       ? Colors.amber
-                //       : Colors.grey,
-                //   child: const Icon(Icons.screen_share_outlined),
-                //   onPressed: () async =>
-                //       await doTry(runAsync: () => signaling.screenSharing()),
-                // ),
-                // if (signaling.isScreenSharing()) ...[
-                //   FloatingActionButton(
-                //     tooltip: 'Stop screen sharing',
-                //     backgroundColor: Colors.redAccent,
-                //     child: const Icon(Icons.stop_screen_share_outlined),
-                //     onPressed: () => signaling.stopScreenSharing(),
-                //   ),
-                // ],
-                // FloatingActionButton(
-                //   tooltip: 'Hangup',
-                //   backgroundColor: Colors.red,
-                //   child: const Icon(Icons.call_end),
-                //   onPressed: () {
-                //     Navigator.pop(context);
-                //     hangUp(false);
-                //   },
-                // ),
-                FloatingActionButton(
-                  tooltip: 'Hangup',
-                  backgroundColor: Colors.red,
-                  child: const Icon(Icons.call_end),
-                  onPressed: () async {
-                    await hangUp(false); // cleanup WebRTC
-                    if (mounted) Navigator.pop(context); // safely go back
-                  },
-                ),
-              ] else ...[
-                FloatingActionButton(
-                  tooltip: 'Start call',
-                  backgroundColor: Colors.green,
-                  child: const Icon(Icons.call),
-                  onPressed: () async => await doTry(
-                    runAsync: () => join(),
-                    onError: () {
-                      Navigator.pop(context);
+              // if (localRenderOk && signaling.isJoined()) ...[
+              //   // FloatingActionButton(
+              //   //   tooltip: signaling.isScreenSharing()
+              //   //       ? 'Change screen sharing'
+              //   //       : 'Start screen sharing',
+              //   //   backgroundColor: signaling.isScreenSharing()
+              //   //       ? Colors.amber
+              //   //       : Colors.grey,
+              //   //   child: const Icon(Icons.screen_share_outlined),
+              //   //   onPressed: () async =>
+              //   //       await doTry(runAsync: () => signaling.screenSharing()),
+              //   // ),
+              //   // if (signaling.isScreenSharing()) ...[
+              //   //   FloatingActionButton(
+              //   //     tooltip: 'Stop screen sharing',
+              //   //     backgroundColor: Colors.redAccent,
+              //   //     child: const Icon(Icons.stop_screen_share_outlined),
+              //   //     onPressed: () => signaling.stopScreenSharing(),
+              //   //   ),
+              //   // ],
+              //   // FloatingActionButton(
+              //   //   tooltip: 'Hangup',
+              //   //   backgroundColor: Colors.red,
+              //   //   child: const Icon(Icons.call_end),
+              //   //   onPressed: () {
+              //   //     Navigator.pop(context);
+              //   //     hangUp(false);
+              //   //   },
+              //   // ),
+              //   FloatingActionButton(
+              //     tooltip: 'Hangup',
+              //     backgroundColor: Colors.red,
+              //     child: const Icon(Icons.call_end),
+              //     onPressed: () async {
+              //       await hangUp(false); // cleanup WebRTC
+              //       if (mounted) Navigator.pop(context); // safely go back
+              //     },
+              //   ),
+              // ] else ...[
+              //   FloatingActionButton(
+              //     tooltip: 'Start call',
+              //     backgroundColor: Colors.green,
+              //     child: const Icon(Icons.call),
+              //     onPressed: () async => await doTry(
+              //       runAsync: () => join(),
+              //       onError: () {
+              //         Navigator.pop(context);
 
-                      hangUp(false);
+              //         hangUp(false);
+              //       },
+              //     ),
+              //   ),
+              // ],
+              if (localRenderOk) ...[
+                // Tampilkan tombol Start Call hanya untuk callee (bukan initiator)
+                if (!_isInitiator && !signaling.isJoined()) ...[
+                  FloatingActionButton(
+                    tooltip: 'Start call',
+                    backgroundColor: Colors.green,
+                    child: const Icon(Icons.call),
+                    onPressed: () async => await doTry(
+                      runAsync: () => join(),
+                      onError: () {
+                        Navigator.pop(context);
+                        hangUp(false);
+                      },
+                    ),
+                  ),
+                ],
+                // Tampilkan tombol hangup jika sudah join atau sedang dalam call
+                if (signaling.isJoined() || _callStarted) ...[
+                  FloatingActionButton(
+                    tooltip: 'Hangup',
+                    backgroundColor: Colors.red,
+                    child: const Icon(Icons.call_end),
+                    onPressed: () async {
+                      await hangUp(false);
+                      if (mounted) Navigator.pop(context);
                     },
                   ),
-                ),
+                ],
               ],
             ],
           ],
@@ -373,6 +439,7 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
         remoteRenderersLoading: remoteRenderersLoading,
         localRenderer: localRenderer,
         signaling: signaling,
+        isInitiator: _isInitiator, // Pass ke body untuk UI yang berbeda
       ),
     );
   }

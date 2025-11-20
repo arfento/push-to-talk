@@ -11,6 +11,7 @@ class WebRTCBody extends StatelessWidget {
   final RTCVideoRenderer localRenderer;
   final TextEditingController controller;
   final Signaling signaling;
+  final bool isInitiator;
 
   const WebRTCBody({
     super.key,
@@ -20,6 +21,7 @@ class WebRTCBody extends StatelessWidget {
     required this.localRenderer,
     required this.controller,
     required this.signaling,
+    this.isInitiator = false, // Default false
   });
 
   @override
@@ -27,38 +29,93 @@ class WebRTCBody extends StatelessWidget {
     final isLandscape =
         MediaQuery.of(context).size.width > MediaQuery.of(context).size.height;
 
-    return Container(
-      margin: const EdgeInsets.all(8.0),
-      child: Column(
-        children: [
-          // Room ID input
-          // Container(
-          //   margin: const EdgeInsets.all(8.0),
-          //   child: Row(
-          //     mainAxisAlignment: MainAxisAlignment.center,
-          //     children: [
-          //       const Text("Join room ID: "),
-          //       Flexible(
-          //         child: TextFormField(
-          //           controller: controller,
-          //           decoration: InputDecoration(
-          //             suffixIcon: IconButton(
-          //               tooltip: 'Generate new Room ID',
-          //               icon: const Icon(Icons.generating_tokens_outlined),
-          //               onPressed: () => controller.text = const Uuid().v4(),
-          //             ),
-          //           ),
-          //         ),
-          //       ),
-          //     ],
-          //   ),
-          // ),
+    return Stack(
+      children: [
+        Container(
+          margin: const EdgeInsets.all(8.0),
+          child: Column(
+            children: [
+              // Streaming views
+              Expanded(
+                child: isLandscape
+                    ? Row(children: _buildVideoViews())
+                    : Column(children: _buildVideoViews()),
+              ),
+            ],
+          ),
+        ),
 
-          // Streaming views
-          Expanded(
-            child: isLandscape
-                ? Row(children: _buildVideoViews())
-                : Column(children: _buildVideoViews()),
+        // Status message overlay
+        Positioned(top: 20, left: 0, right: 0, child: _buildStatusIndicator()),
+      ],
+    );
+  }
+
+  Widget _buildStatusIndicator() {
+    // Jika sudah terhubung, tidak perlu tampilkan status
+    if (signaling.isJoined()) {
+      return const SizedBox.shrink();
+    }
+
+    String statusMessage = "";
+    Color statusColor = Colors.transparent;
+
+    if (isInitiator) {
+      // Caller (initiator)
+      if (!localRenderOk) {
+        statusMessage = "Preparing camera...";
+        statusColor = Colors.orange;
+      } else {
+        statusMessage = "Starting call...";
+        statusColor = Colors.blue;
+      }
+    } else {
+      // Callee (penerima)
+      if (!localRenderOk) {
+        statusMessage = "Incoming call... Preparing camera";
+        statusColor = Colors.orange;
+      } else {
+        statusMessage = "Incoming call... Tap start to join";
+        statusColor = Colors.green;
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isInitiator && localRenderOk)
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
+            ),
+          if (isInitiator && localRenderOk) const SizedBox(width: 8),
+          Text(
+            statusMessage,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+            ),
+            textAlign: TextAlign.center,
           ),
         ],
       ),
@@ -83,6 +140,28 @@ class WebRTCBody extends StatelessWidget {
         VideoRendererView(
           renderer: entry.value,
           loading: remoteRenderersLoading[entry.key] ?? true,
+        ),
+      );
+    }
+
+    // Jika tidak ada video yang ditampilkan, tampilkan placeholder
+    if (views.isEmpty) {
+      views.add(
+        Container(
+          color: Colors.black,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.videocam_off, size: 64, color: Colors.grey[600]),
+                const SizedBox(height: 16),
+                Text(
+                  isInitiator ? "Starting call..." : "Waiting to join call...",
+                  style: TextStyle(color: Colors.grey[600], fontSize: 16),
+                ),
+              ],
+            ),
+          ),
         ),
       );
     }
