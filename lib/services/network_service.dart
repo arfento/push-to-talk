@@ -151,13 +151,13 @@ class NetworkService {
       print(
         "📢 [CLIENT] Sent discovery attempt ${i + 1}/5 for lobby: $lobbyId",
       );
-      await Future.delayed(Duration(milliseconds: 500));
+      await Future.delayed(Duration(milliseconds: 200));
     }
 
     sender.close();
 
     return completer.future.timeout(
-      Duration(seconds: 6),
+      Duration(seconds: 5),
       onTimeout: () {
         _udpSubscription?.cancel();
         _udpReceiver?.close();

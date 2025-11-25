@@ -5,14 +5,17 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:push_to_talk_app/bloc/camera_bloc.dart';
+import 'package:push_to_talk_app/services/background_cleanup_service.dart';
 import 'package:push_to_talk_app/services/network_service.dart';
 import 'package:push_to_talk_app/utils/camera_utils.dart';
 import 'package:push_to_talk_app/utils/permission_utils.dart';
 import 'package:push_to_talk_app/views/components/modern_audio_dialog.dart';
+import 'package:push_to_talk_app/views/udp/components/history_voice_recording_component.dart';
 import 'package:push_to_talk_app/views/udp/file_transfer.dart';
 import 'package:push_to_talk_app/views/udp/video_recording_model.dart';
 import 'package:push_to_talk_app/views/udp/voice_recording_model.dart';
@@ -97,6 +100,15 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   bool _isTcpInitialized = false;
   Completer<void>? _tcpInitializationCompleter;
 
+  // Tambahkan di host untuk track user activity
+  final Map<String, DateTime> _userLastSeen = {};
+  Timer? _userCleanupTimer;
+
+  // Enhanced TCP connection management
+  final Map<String, Socket> _activeTcpConnections = {};
+  bool _isTcpHealthy = false;
+  Timer? _tcpHealthCheckTimer;
+
   @override
   void initState() {
     super.initState();
@@ -106,7 +118,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     //   print("✅ Background service initialized");
     // });
 
-    getLocalIp();
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
     _progressController = StreamController<double>.broadcast();
@@ -115,7 +126,21 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _loadVoiceRecordings();
 
     // Inisialisasi koneksi secara sequential
-    _initializeConnections();
+    _initializeTcpConnections().then((_) {
+      _initializeConnections();
+    });
+  }
+
+  Future<void> _initializeTcpConnections() async {
+    await getLocalIp();
+
+    if (widget.isHost) {
+      await _startRobustTcpServer();
+    } else {
+      await _connectToTcpServer();
+    }
+
+    _startTcpHealthCheck();
   }
 
   Future<void> _initializeConnections() async {
@@ -139,13 +164,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _listenForVoiceRecordings(); // Listen for incoming voice recordings
     _listenForVideoCall();
 
-    // Tunggu user list tersedia sebelum setup TCP
-    await Future.delayed(Duration(seconds: 2));
-    if (widget.isHost) {
-      _startTcpServer();
-    } else {
-      _connectToTcpServer();
-    }
+    // // Tunggu user list tersedia sebelum setup TCP
+    // await Future.delayed(Duration(seconds: 2));
+    // if (widget.isHost) {
+    //   _startTcpServer();
+    // } else {
+    //   _connectToTcpServer();
+    // }
   }
 
   @override
@@ -161,6 +186,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         _isInBackground = true;
         _backgroundTime = DateTime.now();
         log("📱 App masuk background at $_backgroundTime");
+
+        // _startBackgroundService();
         break;
 
       case AppLifecycleState.resumed:
@@ -168,12 +195,16 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         _isInBackground = false;
         _backgroundTime = null;
         log("📱 App kembali ke foreground");
+
+        // _stopBackgroundServiceIfNotNeeded();
         break;
 
       case AppLifecycleState.detached:
         // App benar-benar di-close
         log("❌ App di-DETACHED - cleaning up");
-        _handleAppBackgroundOrClosed();
+        // _handleAppBackgroundOrClosed();
+        // _handleAppClosed();
+
         break;
 
       case AppLifecycleState.hidden:
@@ -182,26 +213,200 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
+  void _handleAppClosed() async {
+    if (_isDisposed) return;
+
+    print("❌ App di-close oleh user, melakukan cleanup...");
+    await _notifyUserLeft();
+    await _cleanupResources();
+  }
+
+  Future<void> _cleanupResources() async {
+    if (_isDisposed) return;
+    _isDisposed = true;
+
+    print("🧹 Cleaning up resources...");
+
+    // Cleanup audio resources
+    try {
+      _silenceTimer?.cancel();
+      if (_isRecording) {
+        await _audioRecorder?.stopRecorder();
+      }
+      if (_isStreaming) {
+        _stopVoiceStreaming();
+      }
+      await _audioRecorder?.closeRecorder();
+      await _audioPlayer?.closePlayer();
+      await _audioStreamController?.close();
+    } catch (e) {
+      print("❌ Error cleaning up audio resources: $e");
+    }
+
+    // Cleanup other resources
+    _keepAliveTimer?.cancel();
+    udpSocket?.close();
+    await _progressController?.close();
+    _connectedUsersNotifier.dispose();
+
+    // Close TCP connections
+    for (Socket client in _tcpClients) {
+      client.destroy();
+    }
+    await _tcpServer?.close();
+
+    print("✅ All resources cleaned up");
+  }
+
+  Future<void> _startBackgroundService() async {
+    try {
+      final service = FlutterBackgroundService();
+      if (!await service.isRunning()) {
+        await service.startService();
+        print("✅ Background service started");
+      }
+    } catch (e) {
+      print("❌ Error starting background service: $e");
+      // Fallback: send leave notification directly
+      await _sendLeaveNotificationDirectly();
+    }
+  }
+
+  Future<void> _stopBackgroundServiceIfNotNeeded() async {
+    try {
+      final service = FlutterBackgroundService();
+      if (await service.isRunning()) {
+        service.invoke("stopService");
+        print("🛑 Background service stopped");
+      }
+    } catch (e) {
+      print("❌ Error stopping background service: $e");
+    }
+  }
+
+  Future<void> _sendLeaveNotificationDirectly() async {
+    // Direct implementation of leave notification without background service
+    if (!widget.isHost && widget.hostIp.isNotEmpty) {
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("LEAVE".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+        );
+        sender.close();
+        print("📤 Sent leave notification directly to host");
+      } catch (e) {
+        print("❌ Error sending leave message directly: $e");
+      }
+    }
+  }
+
   void _handleAppBackgroundOrClosed() async {
     if (_isDisposed) return;
 
-    print("🚨 APP CLOSED - Starting cleanup process");
+    // print("🚨 APP CLOSED - Starting cleanup process");
 
-    print("🔄 App going to background or closing, cleaning up...");
+    // print("🔄 App going to background or closing, cleaning up...");
 
-    // Notify via background service
-    // await BackgroundCleanupService.notifyUserLeft(
-    //   widget.hostIp,
-    //   widget.isHost,
-    //   _myIpAddress,
-    //   connectedUsers,
-    // );
+    // // Notify via background service
+    // // await BackgroundCleanupService.notifyUserLeft(
+    // //   widget.hostIp,
+    // //   widget.isHost,
+    // //   _myIpAddress,
+    // //   connectedUsers,
+    // // );
 
-    await Future.delayed(Duration(milliseconds: 500));
+    // await Future.delayed(Duration(milliseconds: 500));
 
-    await _cleanupAndLeave();
+    // await _cleanupAndLeave();
 
-    print("✅ App closed cleanup completed");
+    // print("✅ App closed cleanup completed");
+
+    // Hanya handle background setelah delay, untuk memastikan ini bukan sekedar pindah activity
+    Future.delayed(Duration(seconds: 2), () async {
+      if (_isInBackground && !_isDisposed) {
+        // Cek jika masih di background setelah 2 detik, kemungkinan besar app di-close
+        // Tapi kita tidak langsung cleanup, tunggu sampai benar-benar detached
+        print("⏰ App masih di background, mungkin akan di-close...");
+      }
+    });
+  }
+
+  void _startUserActivityTracking() {
+    // Update last seen untuk host
+    _userLastSeen[_myIpAddress] = DateTime.now();
+
+    // Start timer untuk periodic check
+    _userCleanupTimer = Timer.periodic(Duration(seconds: 10), (timer) {
+      if (_isDisposed) {
+        timer.cancel();
+        return;
+      }
+
+      _checkInactiveUsers();
+    });
+  }
+
+  void _checkInactiveUsers() {
+    final now = DateTime.now();
+    List<String> usersToRemove = [];
+
+    _userLastSeen.forEach((ip, lastSeen) {
+      if (now.difference(lastSeen) > Duration(seconds: 30)) {
+        // User tidak aktif selama 30 detik, remove
+        print("⏰ User $ip inactive for 30 seconds, removing...");
+        usersToRemove.add(ip);
+      }
+    });
+
+    for (String ip in usersToRemove) {
+      _removeUser(ip);
+      _userLastSeen.remove(ip);
+    }
+  }
+
+  // Update last seen setiap ada activity dari user
+  void _updateUserLastSeen(String ip) {
+    _userLastSeen[ip] = DateTime.now();
+  }
+
+  // Panggil method ini setiap menerima pesan dari user
+  void _handleUserActivity(String userIp) {
+    _updateUserLastSeen(userIp);
+  }
+
+  Future<void> _notifyUserLeft() async {
+    // Kirim notifikasi LEAVE hanya ketika app benar-benar di-close
+    if (!widget.isHost && widget.hostIp.isNotEmpty) {
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("LEAVE".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+        );
+        sender.close();
+        print("📤 [CLIENT] Sent leave notification to host");
+      } catch (e) {
+        print("❌ Error sending leave message: $e");
+      }
+    } else if (widget.isHost) {
+      // Host notify semua client
+      try {
+        for (String ip in connectedUsers) {
+          if (ip != _myIpAddress) {
+            UDP sender = await UDP.bind(Endpoint.any());
+            await sender.send(
+              Uint8List.fromList("HOST_LEAVING".codeUnits),
+              Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
+            );
+            sender.close();
+          }
+        }
+        print("📤 [HOST] Notified all clients about host leaving");
+      } catch (e) {
+        print("❌ Error notifying clients: $e");
+      }
+    }
   }
 
   Future<String?> getLocalIp() async {
@@ -220,6 +425,126 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       }
     }
     return null;
+  }
+
+  void _startReceivingRequests() async {
+    udpSocket = await UDP.bind(
+      Endpoint.any(port: Port(6002)),
+    ); // Host listens on 6002
+    log("🔵 [HOST] Listening for join requests on port 6002...");
+
+    // Add the host itself to the list
+    String hostIp = widget.hostIp;
+    _addUser(hostIp);
+    // _startUserActivityTracking(); // Start tracking
+
+    udpSocket?.asStream().listen((datagram) async {
+      if (datagram != null) {
+        String message = String.fromCharCodes(datagram.data);
+        String userIp = datagram.address.address;
+
+        // Update user activity untuk SEMUA pesan yang diterima
+        _handleUserActivity(userIp);
+
+        if (message == "MotoVox_DISCOVER") {
+          log(
+            "📡 [HOST] Discovery request received from $userIp, responding...",
+          );
+
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            hostIp.codeUnits,
+            Endpoint.unicast(
+              InternetAddress(userIp),
+              port: Port(discoveryPort),
+            ),
+          );
+          sender.close();
+        } else if (message == "JOIN") {
+          log("✅ [HOST] Join request received from: $userIp");
+
+          _addUser(userIp);
+          _broadcastUserList();
+
+          // ✅ Send confirmation to new client
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            "JOINED".codeUnits,
+            Endpoint.unicast(InternetAddress(userIp), port: Port(6003)),
+          );
+          sender.close();
+        } else if (message == "LEAVE") {
+          log("🚪 [HOST] Leave request received from: $userIp");
+          _removeUser(userIp);
+          _userLastSeen.remove(userIp);
+          _broadcastUserList();
+        } else if (message == "PING") {
+          // Respond to ping from clients
+          UDP sender = await UDP.bind(Endpoint.any());
+          await sender.send(
+            Uint8List.fromList("PONG".codeUnits),
+            Endpoint.unicast(InternetAddress(userIp), port: Port(6010)),
+          );
+          sender.close();
+        }
+      }
+    });
+  }
+
+  void _addUser(String userIp) {
+    if (!connectedUsers.contains(userIp)) {
+      _connectedUsersNotifier.value = [...connectedUsers, userIp];
+      log("➕ [USERS] User added: $userIp, Total: ${connectedUsers.length}");
+    }
+  }
+
+  void _removeUser(String userIp) {
+    if (connectedUsers.contains(userIp)) {
+      _connectedUsersNotifier.value = connectedUsers
+          .where((ip) => ip != userIp)
+          .toList();
+      log("➖ [USERS] User removed: $userIp, Total: ${connectedUsers.length}");
+    }
+  }
+
+  void _sendJoinRequest() async {
+    log(
+      "📩 [CLIENT] Sending join request to: ${widget.hostIp}:6002",
+    ); // Debug log
+
+    if (widget.hostIp.isEmpty) {
+      log("❌ Invalid Host IP");
+      return;
+    }
+
+    UDP sender = await UDP.bind(Endpoint.any());
+    for (int i = 0; i < 3; i++) {
+      await sender.send(
+        Uint8List.fromList("JOIN".codeUnits),
+        Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+      );
+      await Future.delayed(Duration(milliseconds: 500));
+    }
+    sender.close();
+    log("📩 [CLIENT] Join request sent to ${widget.hostIp}");
+  }
+
+  void _broadcastUserList() async {
+    if (connectedUsers.isEmpty) return;
+
+    String userList = connectedUsers.join(',');
+    Uint8List data = Uint8List.fromList(userList.codeUnits);
+
+    log("📢 [HOST] Sending updated user list: $userList");
+
+    for (String ip in connectedUsers) {
+      UDP sender = await UDP.bind(Endpoint.any());
+      await sender.send(
+        data,
+        Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
+      );
+      sender.close();
+    }
   }
 
   // Add keep-alive mechanism
@@ -304,94 +629,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         ),
       );
     }
-  }
-
-  // Enhanced leave handling
-  Future<void> _cleanupAndLeave() async {
-    if (_isDisposed) return;
-
-    _isDisposed = true;
-
-    // Send leave notification
-    if (!widget.isHost && widget.hostIp.isNotEmpty) {
-      try {
-        UDP sender = await UDP.bind(Endpoint.any());
-        await sender.send(
-          Uint8List.fromList("LEAVE".codeUnits),
-          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
-        );
-        sender.close();
-        print("📤 [CLIENT] Sent leave notification to host");
-      } catch (e) {
-        print("❌ Error sending leave message: $e");
-      }
-    } else if (widget.isHost) {
-      // Host should notify all clients that they're leaving
-      try {
-        for (String ip in connectedUsers) {
-          if (ip != _myIpAddress) {
-            UDP sender = await UDP.bind(Endpoint.any());
-            await sender.send(
-              Uint8List.fromList("HOST_LEAVING".codeUnits),
-              Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
-            );
-            sender.close();
-          }
-        }
-        print("📤 [HOST] Notified all clients about host leaving");
-      } catch (e) {
-        print("❌ Error notifying clients: $e");
-      }
-    }
-
-    // Cleanup audio resources first
-    try {
-      _silenceTimer?.cancel();
-      // _userCleanupTimer?.cancel();
-      // await _stopPlayerForStream();
-      await _audioRecorder?.stopRecorder();
-      await _audioPlayer?.stopPlayer();
-      await _audioRecorder?.closeRecorder();
-      await _audioPlayer?.closePlayer();
-      await _audioStreamController?.close();
-    } catch (e) {
-      log("❌ Error cleaning up audio resources: $e");
-    }
-    // Stop streaming if active
-    if (_isStreaming) {
-      _stopStreaming();
-    }
-    // Stop recording if active
-    if (_isRecording) {
-      await _audioRecorder!.stopRecorder();
-      setState(() => _isRecording = false);
-    }
-
-    // Cleanup other resources
-    _keepAliveTimer?.cancel();
-    udpSocket?.close();
-    _progressController?.close();
-    _connectedUsersNotifier.dispose();
-
-    // Close TCP connections
-    for (Socket client in _tcpClients) {
-      client.destroy();
-    }
-    await _tcpServer?.close();
-    // Send leave notification (if client)
-    if (!widget.isHost && widget.hostIp.isNotEmpty) {
-      try {
-        UDP sender = await UDP.bind(Endpoint.any());
-        await sender.send(
-          Uint8List.fromList("LEAVE".codeUnits),
-          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
-        );
-        sender.close();
-      } catch (e) {
-        log("❌ Error sending leave message: $e");
-      }
-    }
-    print("🧹 [CLEANUP] All resources cleaned up successfully");
   }
 
   Future<void> _initAudio() async {
@@ -679,6 +916,16 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                   String fileName = videoRecordings[index].fileName;
                   bool isMyVideo =
                       videoRecordings[index].senderIp == _myIpAddress;
+                  String videoSender = "You";
+
+                  if (videoRecordings[index].fileName.contains('_from_')) {
+                    final parts = videoRecordings[index].fileName.split(
+                      '_from_',
+                    );
+                    if (parts.length > 1) {
+                      videoSender = parts[1].replaceAll('.mp4', '');
+                    }
+                  }
 
                   return ListTile(
                     leading: Icon(Icons.video_library, color: Colors.blue),
@@ -692,6 +939,10 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Text(
+                          "From: $videoSender",
+                          style: TextStyle(fontSize: 12),
+                        ),
                         Text(
                           _formatDateTime(videoRecordings[index].timestamp),
                           style: TextStyle(fontSize: 10, color: Colors.grey),
@@ -790,7 +1041,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   // Updated Real-Time Streaming Methods
   // Real-Time Streaming Methods
-  void _startStreaming() async {
+  void _startVoiceStreaming() async {
     if (_isStreaming || _isRecording) return;
     setState(() => _isStreaming = true);
 
@@ -809,7 +1060,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _stopStreaming() async {
+  void _stopVoiceStreaming() async {
     if (!_isStreaming) return;
     setState(() => _isStreaming = false);
     await _audioRecorder!.stopRecorder();
@@ -944,7 +1195,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     await _audioPlayer?.startPlayer(fromURI: tempPath, codec: Codec.aacADTS);
   }
 
-  void _startRecording() async {
+  void _startVoiceRecording() async {
     if (_isRecording) return;
 
     setState(() {
@@ -961,7 +1212,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     });
   }
 
-  void _stopRecording() async {
+  void _stopVoiceRecording() async {
     if (!_isRecording) return;
 
     setState(() {
@@ -987,14 +1238,14 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       // Send to other users
       Uint8List audioData = await File(path).readAsBytes();
-      _sendAudioData(audioData);
+      _sendVoiceRecordData(audioData);
 
       // Also send as voice recording file for history
       await _sendVoiceRecording(path);
     }
   }
 
-  void _sendAudioData(Uint8List audioData) async {
+  void _sendVoiceRecordData(Uint8List audioData) async {
     for (String ip in connectedUsers) {
       if (ip != _myIpAddress) {
         // Skip your own IP
@@ -1005,121 +1256,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         );
         sender.close();
       }
-    }
-  }
-
-  void _startReceivingRequests() async {
-    udpSocket = await UDP.bind(
-      Endpoint.any(port: Port(6002)),
-    ); // Host listens on 6002
-    log("🔵 [HOST] Listening for join requests on port 6002...");
-
-    // Add the host itself to the list
-    String hostIp = widget.hostIp;
-    _addUser(hostIp);
-
-    udpSocket?.asStream().listen((datagram) async {
-      if (datagram != null) {
-        String message = String.fromCharCodes(datagram.data);
-        String userIp = datagram.address.address;
-
-        if (message == "MotoVox_DISCOVER") {
-          log(
-            "📡 [HOST] Discovery request received from $userIp, responding...",
-          );
-
-          UDP sender = await UDP.bind(Endpoint.any());
-          await sender.send(
-            hostIp.codeUnits,
-            Endpoint.unicast(
-              InternetAddress(userIp),
-              port: Port(discoveryPort),
-            ),
-          );
-          sender.close();
-        } else if (message == "JOIN") {
-          log("✅ [HOST] Join request received from: $userIp");
-
-          _addUser(userIp);
-          _broadcastUserList();
-
-          // ✅ Send confirmation to new client
-          UDP sender = await UDP.bind(Endpoint.any());
-          await sender.send(
-            "JOINED".codeUnits,
-            Endpoint.unicast(InternetAddress(userIp), port: Port(6003)),
-          );
-          sender.close();
-        } else if (message == "LEAVE") {
-          log("🚪 [HOST] Leave request received from: $userIp");
-          _removeUser(userIp);
-          _broadcastUserList();
-        } else if (message == "PING") {
-          // Respond to ping from clients
-          UDP sender = await UDP.bind(Endpoint.any());
-          await sender.send(
-            Uint8List.fromList("PONG".codeUnits),
-            Endpoint.unicast(InternetAddress(userIp), port: Port(6010)),
-          );
-          sender.close();
-        }
-      }
-    });
-  }
-
-  void _addUser(String userIp) {
-    if (!connectedUsers.contains(userIp)) {
-      _connectedUsersNotifier.value = [...connectedUsers, userIp];
-      log("➕ [USERS] User added: $userIp, Total: ${connectedUsers.length}");
-    }
-  }
-
-  void _removeUser(String userIp) {
-    if (connectedUsers.contains(userIp)) {
-      _connectedUsersNotifier.value = connectedUsers
-          .where((ip) => ip != userIp)
-          .toList();
-      log("➖ [USERS] User removed: $userIp, Total: ${connectedUsers.length}");
-    }
-  }
-
-  void _sendJoinRequest() async {
-    log(
-      "📩 [CLIENT] Sending join request to: ${widget.hostIp}:6002",
-    ); // Debug log
-
-    if (widget.hostIp.isEmpty) {
-      log("❌ Invalid Host IP");
-      return;
-    }
-
-    UDP sender = await UDP.bind(Endpoint.any());
-    for (int i = 0; i < 3; i++) {
-      await sender.send(
-        Uint8List.fromList("JOIN".codeUnits),
-        Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
-      );
-      await Future.delayed(Duration(milliseconds: 500));
-    }
-    sender.close();
-    log("📩 [CLIENT] Join request sent to ${widget.hostIp}");
-  }
-
-  void _broadcastUserList() async {
-    if (connectedUsers.isEmpty) return;
-
-    String userList = connectedUsers.join(',');
-    Uint8List data = Uint8List.fromList(userList.codeUnits);
-
-    log("📢 [HOST] Sending updated user list: $userList");
-
-    for (String ip in connectedUsers) {
-      UDP sender = await UDP.bind(Endpoint.any());
-      await sender.send(
-        data,
-        Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
-      );
-      sender.close();
     }
   }
 
@@ -1242,6 +1378,61 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     });
   }
 
+  // Check and maintain TCP connections
+  Future<void> _ensureTcpConnections() async {
+    log("🔧 Ensuring TCP connections...");
+
+    if (widget.isHost) {
+      await _ensureTcpServerRunning();
+    } else {
+      await _ensureTcpClientConnected();
+    }
+
+    _startTcpHealthCheck();
+  }
+
+  Future<void> _ensureTcpServerRunning() async {
+    if (_tcpServer == null || _tcpServer!.isBroadcast) {
+      log("🔄 Restarting TCP server...");
+      await _startTcpServer();
+    }
+  }
+
+  Future<void> _ensureTcpClientConnected() async {
+    if (_tcpClients.isEmpty || !_isTcpConnectionHealthy()) {
+      log("🔄 Reconnecting TCP client...");
+      await _connectToTcpServer();
+    }
+  }
+
+  bool _isTcpConnectionHealthy() {
+    for (Socket client in _tcpClients) {
+      try {
+        // Try to get remote address - if it throws, connection is dead
+        client.remoteAddress;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  void _startTcpHealthCheck() {
+    _tcpHealthCheckTimer?.cancel();
+    _tcpHealthCheckTimer = Timer.periodic(Duration(seconds: 10), (timer) async {
+      if (_isDisposed) {
+        timer.cancel();
+        return;
+      }
+
+      if (!_isTcpConnectionHealthy()) {
+        log("⚠️ TCP connection unhealthy, attempting repair...");
+        await _ensureTcpConnections();
+      }
+    });
+  }
+
   // TCP Server for reliable file transfer
   Future<void> _startTcpServer() async {
     try {
@@ -1288,7 +1479,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _startTcpServerWithFallback() async {
-    const List<int> fallbackPorts = [6009, 6010, 6011, 6012];
+    const List<int> fallbackPorts = [6012, 6013, 6014, 6015];
 
     for (int port in fallbackPorts) {
       try {
@@ -1408,7 +1599,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   // TCP Client connection for non-host clients
-  void _connectToTcpServer() async {
+  Future<void> _connectToTcpServer() async {
     if (widget.isHost) return; // Host doesn't need to connect to itself
 
     try {
@@ -1427,26 +1618,20 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
-  // Send video file over TCP (Reliable)
+  // Enhanced video file sending with better error handling and local saving
   Future<void> _sendVideoFileOverTCP(XFile videoFile) async {
-    if (_tcpClients.isEmpty) {
-      if (widget.isHost) {
-        _startTcpServer();
-      } else {
-        _connectToTcpServer();
-      }
-      if (_tcpClients.isEmpty) {
-        log("sendvideo ❌ No TCP connections available");
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('No TCP connections available'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        return;
-      }
+    log("📤 Starting enhanced video file transfer...");
+
+    // Ensure TCP connections are healthy
+    await _ensureTcpConnections();
+
+    // Check if we have any active connections
+    if (_tcpClients.isEmpty && !widget.isHost) {
+      final errorMsg =
+          "❌ No TCP connections available. Please check network connection.";
+      log(errorMsg);
+      _showErrorSnackbar("Failed to send video: No network connection");
+      return;
     }
 
     setState(() {
@@ -1460,13 +1645,29 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     Timer? progressTimer;
     int totalBytes = 0;
     int bytesSent = 0;
+    int successfulSends = 0;
+    List<String> failedIps = [];
 
     try {
+      // 1. Read video data
       Uint8List videoData = await videoFile.readAsBytes();
       totalBytes = videoData.length;
-      String fileName = 'video_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
-      // Start progress timer (updates every 100ms for smooth animation)
+      // 2. Save file locally on sender device first
+      final String localFilePath = await _saveVideoLocally(
+        videoData,
+        _myIpAddress,
+      );
+      log("💾 Video saved locally at: $localFilePath");
+
+      // 3. Prepare file metadata
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final String originalFileName = 'video_${timestamp}.mp4';
+      final String senderFileName = 'sent_video_${timestamp}.mp4'; // For sender
+      final String receiverFileName =
+          'video_${timestamp}_from_${_myIpAddress.replaceAll('.', '_')}.mp4'; // For receivers
+
+      // 4. Start progress updates
       progressTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
         if (bytesSent >= totalBytes) {
           timer.cancel();
@@ -1477,68 +1678,95 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         }
       });
 
-      // Create header
-      Uint8List fileNameBytes = Uint8List.fromList(fileName.codeUnits);
+      // 5. Create file header with receiver-specific filename
+      Uint8List fileNameBytes = Uint8List.fromList(receiverFileName.codeUnits);
       Uint8List header = Uint8List(8 + fileNameBytes.length);
       ByteData headerData = ByteData.view(header.buffer);
       headerData.setUint32(0, videoData.length, Endian.big);
       headerData.setUint32(4, fileNameBytes.length, Endian.big);
       header.setRange(8, 8 + fileNameBytes.length, fileNameBytes);
 
-      List<Socket> clients = List.from(_tcpClients);
-      int successfulSends = 0;
+      // 6. Send to all connected clients
+      final List<Socket> clientsToSend = _getValidTcpClients();
 
-      for (Socket client in clients) {
-        final myIp = _myIpAddress;
+      if (clientsToSend.isEmpty) {
+        throw Exception("No valid TCP connections available");
+      }
+
+      log("📤 Sending video to ${clientsToSend.length} client(s)");
+
+      // Send to each client with individual error handling
+      for (Socket client in clientsToSend) {
         final clientIp = client.remoteAddress.address;
 
-        // ⛔ SKIP diri sendiri
-        if (clientIp == myIp) {
-          continue;
-        }
         try {
-          // client.remoteAddress; // Connection check
+          // Verify connection is still alive
+          client.remoteAddress;
 
-          // Send header and entire file data at once for maximum speed
+          // Send header and file data
           client.add(header);
           client.add(videoData);
           await client.flush();
 
-          bytesSent = totalBytes; // Mark as complete for this client
+          bytesSent = totalBytes; // Mark as complete for progress
           successfulSends++;
 
-          log("sendvideo 📤 [TCP] Video file sent to client: $fileName");
+          log("✅ Video successfully sent to $clientIp");
         } catch (e) {
-          log("sendvideo ❌ [TCP] Client error, removing: $e");
+          log("❌ Failed to send to $clientIp: $e");
+          failedIps.add(clientIp);
+
+          // Remove broken connection
           _tcpClients.remove(client);
+          try {
+            client.destroy();
+          } catch (destroyError) {
+            log("⚠️ Error destroying broken connection: $destroyError");
+          }
         }
       }
 
+      // 7. Handle results
       await Future.delayed(Duration(milliseconds: 500)); // Show completion
 
-      log(
-        "sendvideo 📤 [TCP] Video file sent: $fileName (${videoData.length} bytes) to $successfulSends clients",
+      final String resultMessage = _buildTransferResultMessage(
+        successfulSends,
+        failedIps,
+        clientsToSend.length,
       );
+
+      log("📊 Transfer completed: $resultMessage");
 
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..removeCurrentSnackBar()
           ..showSnackBar(
             SnackBar(
-              content: Text('Video sent to $successfulSends client(s)'),
-              backgroundColor: Colors.green,
+              content: Text(resultMessage),
+              backgroundColor: successfulSends > 0
+                  ? Colors.green
+                  : Colors.orange,
+              duration: Duration(seconds: 4),
             ),
           );
       }
+
+      // 8. If all failed and we're not host, try to reconnect
+      if (successfulSends == 0 && !widget.isHost) {
+        log("🔄 All sends failed, attempting TCP reconnection...");
+        await _reconnectTcpWithRetry();
+      }
     } catch (e) {
-      log("sendvideo ❌ [TCP] Error sending video file: $e");
+      log("❌ Critical error in video transfer: $e");
+
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..removeCurrentSnackBar()
           ..showSnackBar(
             SnackBar(
-              content: Text('Error sending video file: $e'),
+              content: Text('Failed to send video: ${e.toString()}'),
               backgroundColor: Colors.red,
+              duration: Duration(seconds: 5),
             ),
           );
       }
@@ -1550,6 +1778,217 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       _hideFileTransferProgressDialog();
     }
   }
+
+  // Get valid TCP clients excluding self
+  List<Socket> _getValidTcpClients() {
+    return _tcpClients.where((client) {
+      try {
+        return client.remoteAddress.address != _myIpAddress;
+      } catch (e) {
+        return false; // Remove invalid clients
+      }
+    }).toList();
+  }
+
+  // Build transfer result message
+  String _buildTransferResultMessage(
+    int successful,
+    List<String> failed,
+    int total,
+  ) {
+    if (successful == total) {
+      return 'Video sent successfully to $successful client(s)';
+    } else if (successful > 0) {
+      return 'Video sent to $successful client(s), failed: ${failed.length}';
+    } else {
+      return 'Failed to send video to any client. Please check connections.';
+    }
+  }
+
+  // Enhanced TCP reconnection with retry
+  Future<void> _reconnectTcpWithRetry() async {
+    const int maxRetries = 3;
+
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      log("🔄 TCP reconnection attempt $attempt/$maxRetries...");
+
+      try {
+        await _cleanupTcpResources();
+        await Future.delayed(Duration(seconds: 1));
+
+        if (widget.isHost) {
+          await _startTcpServer();
+        } else {
+          await _connectToTcpServer();
+        }
+
+        // Verify connection is working
+        if (_isTcpConnectionHealthy()) {
+          log("✅ TCP reconnection successful on attempt $attempt");
+          _showInfoSnackbar("Network connection restored");
+          return;
+        }
+      } catch (e) {
+        log("❌ TCP reconnection attempt $attempt failed: $e");
+      }
+
+      if (attempt < maxRetries) {
+        await Future.delayed(Duration(seconds: 2));
+      }
+    }
+
+    log("❌ All TCP reconnection attempts failed");
+    _showErrorSnackbar(
+      "Cannot establish network connection after $maxRetries attempts",
+    );
+  }
+
+  // Save video locally on sender device
+  Future<String> _saveVideoLocally(Uint8List videoData, String senderIp) async {
+    try {
+      final directory = await _getAppDirectory();
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+
+      // Different naming for sender vs receiver
+      final String fileName = senderIp == _myIpAddress
+          ? 'sent_video_$timestamp.mp4' // Sender's copy
+          : 'video_${timestamp}_from_${senderIp.replaceAll('.', '_')}.mp4'; // Receiver's copy
+
+      final String filePath = '$directory/$fileName';
+
+      await File(filePath).writeAsBytes(videoData);
+      log("💾 Video saved locally: $filePath");
+
+      return filePath;
+    } catch (e) {
+      log("❌ Error saving video locally: $e");
+      rethrow;
+    }
+  }
+
+  // Send video file over TCP (Reliable)
+  // Future<void> _sendVideoFileOverTCP(XFile videoFile) async {
+  //   if (_tcpClients.isEmpty) {
+  //     if (widget.isHost) {
+  //       _startTcpServer();
+  //     } else {
+  //       _connectToTcpServer();
+  //     }
+  //     if (_tcpClients.isEmpty) {
+  //       log("sendvideo ❌ No TCP connections available");
+  //       ScaffoldMessenger.of(context)
+  //         ..removeCurrentSnackBar()
+  //         ..showSnackBar(
+  //           SnackBar(
+  //             content: Text('No TCP connections available'),
+  //             backgroundColor: Colors.red,
+  //           ),
+  //         );
+  //       return;
+  //     }
+  //   }
+
+  //   setState(() {
+  //     _isSendingFile = true;
+  //     _fileTransferProgress = 0.0;
+  //     _currentFileName = videoFile.name;
+  //   });
+
+  //   _showFileTransferProgressDialog();
+
+  //   Timer? progressTimer;
+  //   int totalBytes = 0;
+  //   int bytesSent = 0;
+
+  //   try {
+  //     Uint8List videoData = await videoFile.readAsBytes();
+  //     totalBytes = videoData.length;
+  //     String fileName = 'video_${DateTime.now().millisecondsSinceEpoch}.mp4';
+
+  //     // Start progress timer (updates every 100ms for smooth animation)
+  //     progressTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+  //       if (bytesSent >= totalBytes) {
+  //         timer.cancel();
+  //         _progressController?.add(1.0);
+  //       } else {
+  //         double progress = bytesSent / totalBytes;
+  //         _progressController?.add(progress);
+  //       }
+  //     });
+
+  //     // Create header
+  //     Uint8List fileNameBytes = Uint8List.fromList(fileName.codeUnits);
+  //     Uint8List header = Uint8List(8 + fileNameBytes.length);
+  //     ByteData headerData = ByteData.view(header.buffer);
+  //     headerData.setUint32(0, videoData.length, Endian.big);
+  //     headerData.setUint32(4, fileNameBytes.length, Endian.big);
+  //     header.setRange(8, 8 + fileNameBytes.length, fileNameBytes);
+
+  //     List<Socket> clients = List.from(_tcpClients);
+  //     int successfulSends = 0;
+
+  //     for (Socket client in clients) {
+  //       final myIp = _myIpAddress;
+  //       final clientIp = client.remoteAddress.address;
+
+  //       // ⛔ SKIP diri sendiri
+  //       if (clientIp == myIp) {
+  //         continue;
+  //       }
+  //       try {
+  //         // client.remoteAddress; // Connection check
+
+  //         // Send header and entire file data at once for maximum speed
+  //         client.add(header);
+  //         client.add(videoData);
+  //         await client.flush();
+
+  //         bytesSent = totalBytes; // Mark as complete for this client
+  //         successfulSends++;
+
+  //         log("sendvideo 📤 [TCP] Video file sent to client: $fileName");
+  //       } catch (e) {
+  //         log("sendvideo ❌ [TCP] Client error, removing: $e");
+  //         _tcpClients.remove(client);
+  //       }
+  //     }
+
+  //     await Future.delayed(Duration(milliseconds: 500)); // Show completion
+
+  //     log(
+  //       "sendvideo 📤 [TCP] Video file sent: $fileName (${videoData.length} bytes) to $successfulSends clients",
+  //     );
+
+  //     if (mounted) {
+  //       ScaffoldMessenger.of(context)
+  //         ..removeCurrentSnackBar()
+  //         ..showSnackBar(
+  //           SnackBar(
+  //             content: Text('Video sent to $successfulSends client(s)'),
+  //             backgroundColor: Colors.green,
+  //           ),
+  //         );
+  //     }
+  //   } catch (e) {
+  //     log("sendvideo ❌ [TCP] Error sending video file: $e");
+  //     if (mounted) {
+  //       ScaffoldMessenger.of(context)
+  //         ..removeCurrentSnackBar()
+  //         ..showSnackBar(
+  //           SnackBar(
+  //             content: Text('Error sending video file: $e'),
+  //             backgroundColor: Colors.red,
+  //           ),
+  //         );
+  //     }
+  //   } finally {
+  //     progressTimer?.cancel();
+  //     setState(() {
+  //       _isSendingFile = false;
+  //     });
+  //     _hideFileTransferProgressDialog();
+  //   }
+  // }
 
   Future<void> _relayFileToOtherClients(
     Uint8List fileData,
@@ -1587,55 +2026,146 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     log("📤 Relay done: forwarded to $relayCount client(s)");
   }
 
-  // Save received file
+  // Enhanced file saving for received files
   Future<void> _saveReceivedFile(Uint8List fileData, String fileName) async {
     try {
-      String directory = await _getAppDirectory();
-      String filePath = '$directory/$fileName';
+      // Save the received file with original name (includes sender IP)
+      final String directory = await _getAppDirectory();
+      final String filePath = '$directory/$fileName';
 
       await File(filePath).writeAsBytes(fileData);
 
+      log("💾 Received file saved: $filePath");
+
+      // Show success notification
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..removeCurrentSnackBar()
           ..showSnackBar(
             SnackBar(
-              content: Text('File received: $fileName'),
+              content: Text(
+                'Video received: ${fileName.split('_from_').first}',
+              ),
               backgroundColor: Colors.green,
             ),
           );
       }
 
-      log("sendvideo _saveReceivedFile 💾 File saved: $filePath");
-      if (filePath != null) {
-        if (mounted) {
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: Text('Video Received'),
-              content: Text('Video saved to: $filePath'),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                    showDialog(
-                      context: context,
-                      barrierDismissible: false,
-                      builder: (context) =>
-                          VideoPathDialog(videoPath: filePath),
-                    );
-                  },
-                  child: Text('OK'),
+      // Show video dialog
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Video Received'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Video saved successfully'),
+                SizedBox(height: 8),
+                Text(
+                  'From: ${_extractSenderIpFromFileName(fileName)}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ],
             ),
-          );
-        }
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) => VideoPathDialog(videoPath: filePath),
+                  );
+                },
+                child: Text('Play Video'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('Close'),
+              ),
+            ],
+          ),
+        );
       }
     } catch (e) {
-      log("sendvideo _saveReceivedFile  ❌ Error saving file: $e");
+      log("❌ Error saving received file: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..removeCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Error saving received video'),
+              backgroundColor: Colors.red,
+            ),
+          );
+      }
     }
   }
+
+  // Extract sender IP from filename for display
+  String _extractSenderIpFromFileName(String fileName) {
+    try {
+      final match = RegExp(r'from_([\d_]+)\.mp4').firstMatch(fileName);
+      if (match != null) {
+        return match.group(1)!.replaceAll('_', '.');
+      }
+      return 'Unknown';
+    } catch (e) {
+      return 'Unknown';
+    }
+  }
+
+  // Save received file
+  // Future<void> _saveReceivedFile(Uint8List fileData, String fileName) async {
+  //   try {
+  //     String directory = await _getAppDirectory();
+  //     String filePath = '$directory/$fileName';
+
+  //     await File(filePath).writeAsBytes(fileData);
+
+  //     if (mounted) {
+  //       ScaffoldMessenger.of(context)
+  //         ..removeCurrentSnackBar()
+  //         ..showSnackBar(
+  //           SnackBar(
+  //             content: Text('File received: $fileName'),
+  //             backgroundColor: Colors.green,
+  //           ),
+  //         );
+  //     }
+
+  //     log("sendvideo _saveReceivedFile 💾 File saved: $filePath");
+  //     if (filePath != null) {
+  //       if (mounted) {
+  //         showDialog(
+  //           context: context,
+  //           builder: (context) => AlertDialog(
+  //             title: Text('Video Received'),
+  //             content: Text('Video saved to: $filePath'),
+  //             actions: [
+  //               TextButton(
+  //                 onPressed: () {
+  //                   Navigator.of(context).pop();
+  //                   showDialog(
+  //                     context: context,
+  //                     barrierDismissible: false,
+  //                     builder: (context) =>
+  //                         VideoPathDialog(videoPath: filePath),
+  //                   );
+  //                 },
+  //                 child: Text('OK'),
+  //               ),
+  //             ],
+  //           ),
+  //         );
+  //       }
+  //     }
+  //   } catch (e) {
+  //     log("sendvideo _saveReceivedFile  ❌ Error saving file: $e");
+  //   }
+  // }
 
   Future<String> _getAppDirectory() async {
     final directory = Directory.systemTemp;
@@ -1757,9 +2287,10 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                     ),
                     TextButton(
                       onPressed: () async {
+                        // Kirim notifikasi dan cleanup
+                        await _notifyUserLeft();
                         await _cleanupAndLeave();
-
-                        Navigator.of(context).pop(true);
+                        if (context.mounted) Navigator.of(context).pop(true);
                       },
                       child: const Text("Exit"),
                     ),
@@ -1768,26 +2299,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
               ) ??
               false;
 
-          if (shouldExit) {
-            for (String ip in connectedUsers) {
-              if (ip != _myIpAddress) {
-                try {
-                  final sender = await UDP.bind(Endpoint.any());
-                  await sender.send(
-                    Uint8List.fromList("HOST_LEAVING".codeUnits),
-                    Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
-                  );
-                  sender.close();
-                } catch (e) {
-                  log("❌ Error notifying client $ip: $e");
-                }
-              }
-            }
-
-            await _cleanupAndLeave();
-            if (context.mounted) Navigator.of(context).pop(result);
+          if (shouldExit && context.mounted) {
+            Navigator.of(context).pop(result);
           }
         } else {
+          // Untuk client, cukup cleanup dan pop
           await _cleanupAndLeave();
           if (context.mounted) Navigator.of(context).pop(result);
         }
@@ -2311,15 +2827,15 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                       label: _isRecording ? "Stop" : "Record",
                                       onPressed: () async {
                                         if (_isRecording) {
-                                          _stopRecording();
+                                          _stopVoiceRecording();
                                         } else {
                                           if (await PermissionUtils()
                                               .getCameraAndMicrophonePermissionStatus()) {
-                                            _startRecording();
+                                            _startVoiceRecording();
                                           } else {
                                             if (await PermissionUtils()
                                                 .askForPermission()) {
-                                              _startRecording();
+                                              _startVoiceRecording();
                                             } else {
                                               log("Permission is denied");
                                               ScaffoldMessenger.of(context)
@@ -2350,15 +2866,15 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                       label: _isStreaming ? "Stop" : "Talk",
                                       onPressed: () async {
                                         if (_isStreaming) {
-                                          _stopStreaming();
+                                          _stopVoiceStreaming();
                                         } else {
                                           if (await PermissionUtils()
                                               .getCameraAndMicrophonePermissionStatus()) {
-                                            _startStreaming();
+                                            _startVoiceStreaming();
                                           } else {
                                             if (await PermissionUtils()
                                                 .askForPermission()) {
-                                              _startStreaming();
+                                              _startVoiceStreaming();
                                             } else {
                                               log("Permission is denied");
                                               ScaffoldMessenger.of(context)
@@ -2469,6 +2985,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       await Future.delayed(Duration(milliseconds: 500));
 
       // 3. Lakukan cleanup lainnya
+
+      _sendLeaveNotificationDirectly();
+
       await _cleanupAndLeave();
     } catch (e) {
       log("❌ Error during disposal: $e");
@@ -2479,6 +2998,94 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       super.dispose();
       log("✅ Disposal completed");
     }
+  }
+
+  // Enhanced leave handling
+  Future<void> _cleanupAndLeave() async {
+    if (_isDisposed) return;
+
+    _isDisposed = true;
+
+    // Send leave notification
+    if (!widget.isHost && widget.hostIp.isNotEmpty) {
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("LEAVE".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+        );
+        sender.close();
+        print("📤 [CLIENT] Sent leave notification to host");
+      } catch (e) {
+        print("❌ Error sending leave message: $e");
+      }
+    } else if (widget.isHost) {
+      // Host should notify all clients that they're leaving
+      try {
+        for (String ip in connectedUsers) {
+          if (ip != _myIpAddress) {
+            UDP sender = await UDP.bind(Endpoint.any());
+            await sender.send(
+              Uint8List.fromList("HOST_LEAVING".codeUnits),
+              Endpoint.unicast(InternetAddress(ip), port: Port(6003)),
+            );
+            sender.close();
+          }
+        }
+        print("📤 [HOST] Notified all clients about host leaving");
+      } catch (e) {
+        print("❌ Error notifying clients: $e");
+      }
+    }
+
+    // Cleanup audio resources first
+    try {
+      _silenceTimer?.cancel();
+      // _userCleanupTimer?.cancel();
+      // await _stopPlayerForStream();
+      await _audioRecorder?.stopRecorder();
+      await _audioPlayer?.stopPlayer();
+      await _audioRecorder?.closeRecorder();
+      await _audioPlayer?.closePlayer();
+      await _audioStreamController?.close();
+    } catch (e) {
+      log("❌ Error cleaning up audio resources: $e");
+    }
+    // Stop streaming if active
+    if (_isStreaming) {
+      _stopVoiceStreaming();
+    }
+    // Stop recording if active
+    if (_isRecording) {
+      await _audioRecorder!.stopRecorder();
+      setState(() => _isRecording = false);
+    }
+
+    // Cleanup other resources
+    _keepAliveTimer?.cancel();
+    udpSocket?.close();
+    _progressController?.close();
+    _connectedUsersNotifier.dispose();
+
+    // Close TCP connections
+    for (Socket client in _tcpClients) {
+      client.destroy();
+    }
+    await _tcpServer?.close();
+    // Send leave notification (if client)
+    if (!widget.isHost && widget.hostIp.isNotEmpty) {
+      try {
+        UDP sender = await UDP.bind(Endpoint.any());
+        await sender.send(
+          Uint8List.fromList("LEAVE".codeUnits),
+          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
+        );
+        sender.close();
+      } catch (e) {
+        log("❌ Error sending leave message: $e");
+      }
+    }
+    print("🧹 [CLEANUP] All resources cleaned up successfully");
   }
 
   Future<void> _startRobustTcpServer() async {
@@ -2705,89 +3312,10 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       showDialog(
         context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Voice Recordings (${_voiceRecordings.length})'),
-          content: Container(
-            width: double.maxFinite,
-            height: MediaQuery.of(context).size.height * 0.6,
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: _voiceRecordings.length,
-              itemBuilder: (context, index) {
-                VoiceRecording recording = _voiceRecordings[index];
-                bool isMyRecording = recording.senderIp == _myIpAddress;
-
-                return Container(
-                  margin: EdgeInsets.symmetric(vertical: 4),
-                  decoration: BoxDecoration(
-                    color: isMyRecording ? Colors.blue[50] : Colors.grey[100],
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: isMyRecording
-                          ? Colors.blue[100]!
-                          : Colors.grey[300]!,
-                    ),
-                  ),
-                  child: ListTile(
-                    leading: Icon(
-                      Icons.audiotrack,
-                      color: isMyRecording ? Colors.blue : Colors.green,
-                    ),
-                    title: Text(
-                      '${recording.fileName}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w500,
-                        fontSize: 12,
-                      ),
-                    ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Text(
-                        //   'From: ${isMyRecording ? 'You' : recording.senderIp}',
-                        //   style: TextStyle(fontSize: 12),
-                        // ),
-                        Text(
-                          _formatDateTime(recording.timestamp),
-                          style: TextStyle(fontSize: 10, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.play_arrow, color: Colors.green),
-                          onPressed: () {
-                            showDialog(
-                              context: context,
-                              builder: (context) => ModernAudioDialog(
-                                filePath: recording.filePath,
-                                sender: recording.senderIp,
-                                timestamp: DateTime.now(),
-                                isMyRecording: isMyRecording,
-                              ),
-                            );
-                          },
-                        ),
-                        IconButton(
-                          icon: Icon(Icons.delete, color: Colors.red),
-                          onPressed: () =>
-                              _deleteVoiceRecording(recording, index),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Close'),
-            ),
-          ],
+        builder: (_) => VoiceHistoryDialog(
+          recordings: _voiceRecordings,
+          myIp: _myIpAddress,
+          onDelete: _deleteVoiceRecording,
         ),
       );
     } catch (e) {
@@ -2838,7 +3366,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')} ${dateTime.day}/${dateTime.month}/${dateTime.year}';
   }
 
-  // Show file transfer progress dialog
   void _showFileTransferProgressDialog() {
     showDialog(
       context: context,
@@ -2849,6 +3376,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             stream: _progressController?.stream,
             builder: (context, snapshot) {
               double progress = snapshot.data ?? _fileTransferProgress;
+              int percentage = (progress * 100).toInt();
 
               return AlertDialog(
                 title: Row(
@@ -2875,33 +3403,54 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
-                    // SizedBox(height: 16),
-                    // LinearProgressIndicator(
-                    //   value: progress,
-                    //   backgroundColor: Colors.grey[300],
-                    //   valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                    // ),
-                    // SizedBox(height: 8),
-                    // Text(
-                    //   '${(progress * 100).toStringAsFixed(1)}%',
-                    //   textAlign: TextAlign.center,
-                    //   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                    // ),
-                    SizedBox(height: 4),
-                    Text(
-                      'Sending to ${_tcpClients.length} client(s)',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+                    SizedBox(height: 12),
+                    LinearProgressIndicator(
+                      value: progress,
+                      backgroundColor: Colors.grey[300],
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        progress < 1.0 ? Colors.blue : Colors.green,
+                      ),
                     ),
+                    SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '$percentage%',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                        Text(
+                          '${_getValidTcpClients().length} client(s)',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey[500],
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 4),
+                    if (progress < 1.0)
+                      Text(
+                        'Sending...',
+                        style: TextStyle(fontSize: 10, color: Colors.blue),
+                      ),
+                    if (progress >= 1.0)
+                      Text(
+                        'Completed!',
+                        style: TextStyle(fontSize: 10, color: Colors.green),
+                      ),
                   ],
                 ),
                 actions: [
                   if (progress < 1.0)
                     TextButton(
                       onPressed: () {
-                        // Option to cancel transfer
                         _isSendingFile = false;
                         Navigator.pop(context);
+                        _showInfoSnackbar('Video transfer cancelled');
                       },
                       child: Text('Cancel'),
                     ),
@@ -2913,6 +3462,92 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       ),
     );
   }
+
+  void _showInfoSnackbar(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..removeCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.blue),
+        );
+    }
+  }
+
+  // Show file transfer progress dialog
+  // void _showFileTransferProgressDialog() {
+  //   showDialog(
+  //     context: context,
+  //     barrierDismissible: false,
+  //     builder: (context) => StatefulBuilder(
+  //       builder: (context, setState) {
+  //         return StreamBuilder<double>(
+  //           stream: _progressController?.stream,
+  //           builder: (context, snapshot) {
+  //             double progress = snapshot.data ?? _fileTransferProgress;
+
+  //             return AlertDialog(
+  //               title: Row(
+  //                 children: [
+  //                   CircularProgressIndicator(),
+  //                   SizedBox(width: 16),
+  //                   Expanded(
+  //                     child: Text(
+  //                       'Sending Video File',
+  //                       style: TextStyle(fontSize: 16),
+  //                     ),
+  //                   ),
+  //                 ],
+  //               ),
+  //               content: Column(
+  //                 mainAxisSize: MainAxisSize.min,
+  //                 crossAxisAlignment: CrossAxisAlignment.start,
+  //                 children: [
+  //                   Text(
+  //                     _currentFileName,
+  //                     style: TextStyle(
+  //                       fontSize: 14,
+  //                       fontWeight: FontWeight.w500,
+  //                     ),
+  //                     overflow: TextOverflow.ellipsis,
+  //                   ),
+  //                   // SizedBox(height: 16),
+  //                   // LinearProgressIndicator(
+  //                   //   value: progress,
+  //                   //   backgroundColor: Colors.grey[300],
+  //                   //   valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+  //                   // ),
+  //                   // SizedBox(height: 8),
+  //                   // Text(
+  //                   //   '${(progress * 100).toStringAsFixed(1)}%',
+  //                   //   textAlign: TextAlign.center,
+  //                   //   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+  //                   // ),
+  //                   SizedBox(height: 4),
+  //                   Text(
+  //                     'Sending to ${_tcpClients.length} client(s)',
+  //                     textAlign: TextAlign.center,
+  //                     style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+  //                   ),
+  //                 ],
+  //               ),
+  //               actions: [
+  //                 if (progress < 1.0)
+  //                   TextButton(
+  //                     onPressed: () {
+  //                       // Option to cancel transfer
+  //                       _isSendingFile = false;
+  //                       Navigator.pop(context);
+  //                     },
+  //                     child: Text('Cancel'),
+  //                   ),
+  //               ],
+  //             );
+  //           },
+  //         );
+  //       },
+  //     ),
+  //   );
+  // }
 
   // Hide file transfer progress dialog
   void _hideFileTransferProgressDialog() {
