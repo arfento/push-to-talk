@@ -3,21 +3,20 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:push_to_talk_app/firebase_options.dart';
-import 'package:push_to_talk_app/utils/constants/constants.dart';
-import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/pcm_streaming_screen.dart';
-import 'package:push_to_talk_app/views/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
-import 'package:push_to_talk_app/views/audio_record/screens/record_screen/audio_record_screen.dart';
-import 'package:push_to_talk_app/views/audio_record/screens/record_screen/cubit/record_cubit.dart';
-import 'package:push_to_talk_app/views/audio_record/screens/recordings_list/cubit/files_cubit.dart';
-import 'package:push_to_talk_app/views/audio_record/screens/recordings_list/recordings_list_screen.dart';
-import 'package:push_to_talk_app/views/auth/login_screen.dart';
-import 'package:push_to_talk_app/views/auth/register_screen.dart';
-import 'package:push_to_talk_app/views/home/walkie_talkie_screen.dart';
-import 'package:push_to_talk_app/views/ptt_screen.dart';
-import 'package:push_to_talk_app/views/udp/lobby_screen.dart';
-import 'package:push_to_talk_app/views/udp/udp_home_screen.dart';
-import 'package:push_to_talk_app/views/video_stream/video_home_page.dart';
-import 'package:push_to_talk_app/views/welcome_screen.dart';
+import 'package:push_to_talk_app/core/constants/constants.dart';
+import 'package:push_to_talk_app/presentation/pages/audio_record/screens/radio_streaming/pcm_streaming_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/audio_record/screens/record_screen/audio_record_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/cubit/record_cubit.dart';
+import 'package:push_to_talk_app/presentation/pages/audio_record/screens/recordings_list/cubit/files_cubit.dart';
+import 'package:push_to_talk_app/presentation/pages/audio_record/screens/recordings_list/recordings_list_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/auth/login_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/auth/register_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/home/walkie_talkie_screen.dart';
+import 'package:push_to_talk_app/presentation/ptt_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/lobby/lobby_screen.dart';
+import 'package:push_to_talk_app/presentation/pages/lobby/create_lobby_screen.dart';
+import 'package:push_to_talk_app/presentation/welcome_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -64,8 +63,7 @@ class MyApp extends StatelessWidget {
           RegisterScreen.id: (context) => RegisterScreen(),
           LoginScreen.id: (context) => LoginScreen(),
           WalkieTalkieScreen.id: (context) => WalkieTalkieScreen(),
-          UdpHomeScreen.id: (context) => UdpHomeScreen(),
-          VideoHomePage.id: (context) => VideoHomePage(),
+          CreateLobbyScreen.id: (context) => CreateLobbyScreen(),
           AudioRecordScreen.routeName: (context) => AudioRecordScreen(),
           RecordingsListScreen.routeName: (context) => RecordingsListScreen(),
           RadioStreamingScreen.routeName: (context) => RadioStreamingScreen(),
@@ -86,7 +84,7 @@ class MyApp extends StatelessWidget {
           }
           return null;
         },
-        // home: UdpHomeScreen(),
+        // home: CreateLobbyScreen(),
         // initialRoute: WelcomeScreen.id,
         // routes: {
         //   WelcomeScreen.id: (context) => WelcomeScreen(),
