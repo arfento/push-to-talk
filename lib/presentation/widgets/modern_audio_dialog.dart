@@ -9,12 +9,12 @@ class ModernAudioDialog extends StatefulWidget {
   final bool isMyRecording;
 
   const ModernAudioDialog({
-    Key? key,
+    super.key,
     required this.filePath,
     required this.sender,
     required this.timestamp,
     required this.isMyRecording,
-  }) : super(key: key);
+  });
 
   @override
   State<ModernAudioDialog> createState() => _ModernAudioDialogState();

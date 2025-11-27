@@ -5,7 +5,6 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -87,22 +86,10 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   List<VoiceRecording> _voiceRecordings = [];
   static const int VOICE_PORT = 6011;
 
-  // Voice playing variables
-  VoiceRecording? _currentlyPlayingRecording;
-
-  //
-  bool _isInBackground = false;
-  DateTime? _backgroundTime;
-
   final Map<String, Socket> _tcpConnections = {};
   bool _isTcpInitialized = false;
   Completer<void>? _tcpInitializationCompleter;
-
-  // Tambahkan di host untuk track user activity
-  final Map<String, DateTime> _userLastSeen = {};
-  Timer? _userCleanupTimer;
-
-  // Enhanced TCP connection management
+  // TCP connection management
   final Map<String, Socket> _activeTcpConnections = {};
   bool _isTcpHealthy = false;
   Timer? _tcpHealthCheckTimer;
@@ -111,10 +98,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-
-    // BackgroundCleanupService.initialize().then((_) {
-    //   print("✅ Background service initialized");
-    // });
 
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
@@ -148,7 +131,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     if (widget.isHost) {
       _startReceivingRequests();
       _startKeepAliveBroadcast();
-      // await _startRobustTcpServer(); // Gunakan yang robust
     } else {
       _sendJoinRequest();
       _startKeepAliveListener();
@@ -161,14 +143,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _listenForVideoStream(); // New listener for video
     _listenForVoiceRecordings(); // Listen for incoming voice recordings
     _listenForVideoCall();
-
-    // // Tunggu user list tersedia sebelum setup TCP
-    // await Future.delayed(Duration(seconds: 2));
-    // if (widget.isHost) {
-    //   _startTcpServer();
-    // } else {
-    //   _connectToTcpServer();
-    // }
   }
 
   @override
@@ -181,27 +155,19 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
         // App masuk background
-        _isInBackground = true;
-        _backgroundTime = DateTime.now();
-        log("📱 App masuk background at $_backgroundTime");
+        log("📱 App masuk background at ${DateTime.now()}");
 
-        // _startBackgroundService();
         break;
 
       case AppLifecycleState.resumed:
         // App kembali ke foreground
-        _isInBackground = false;
-        _backgroundTime = null;
         log("📱 App kembali ke foreground");
 
-        // _stopBackgroundServiceIfNotNeeded();
         break;
 
       case AppLifecycleState.detached:
         // App benar-benar di-close
         log("❌ App di-DETACHED - cleaning up");
-        // _handleAppBackgroundOrClosed();
-        // _handleAppClosed();
 
         break;
 
@@ -209,168 +175,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         log("📱 App HIDDEN");
         break;
     }
-  }
-
-  void _handleAppClosed() async {
-    if (_isDisposed) return;
-
-    print("❌ App di-close oleh user, melakukan cleanup...");
-    await _notifyUserLeft();
-    await _cleanupResources();
-  }
-
-  Future<void> _cleanupResources() async {
-    if (_isDisposed) return;
-    _isDisposed = true;
-
-    print("🧹 Cleaning up resources...");
-
-    // Cleanup audio resources
-    try {
-      _silenceTimer?.cancel();
-      if (_isRecording) {
-        await _audioRecorder?.stopRecorder();
-      }
-      if (_isStreaming) {
-        _stopVoiceStreaming();
-      }
-      await _audioRecorder?.closeRecorder();
-      await _audioPlayer?.closePlayer();
-      await _audioStreamController?.close();
-    } catch (e) {
-      print("❌ Error cleaning up audio resources: $e");
-    }
-
-    // Cleanup other resources
-    _keepAliveTimer?.cancel();
-    udpSocket?.close();
-    await _progressController?.close();
-    _connectedUsersNotifier.dispose();
-
-    // Close TCP connections
-    for (Socket client in _tcpClients) {
-      client.destroy();
-    }
-    await _tcpServer?.close();
-
-    print("✅ All resources cleaned up");
-  }
-
-  Future<void> _startBackgroundService() async {
-    try {
-      final service = FlutterBackgroundService();
-      if (!await service.isRunning()) {
-        await service.startService();
-        print("✅ Background service started");
-      }
-    } catch (e) {
-      print("❌ Error starting background service: $e");
-      // Fallback: send leave notification directly
-      await _sendLeaveNotificationDirectly();
-    }
-  }
-
-  Future<void> _stopBackgroundServiceIfNotNeeded() async {
-    try {
-      final service = FlutterBackgroundService();
-      if (await service.isRunning()) {
-        service.invoke("stopService");
-        print("🛑 Background service stopped");
-      }
-    } catch (e) {
-      print("❌ Error stopping background service: $e");
-    }
-  }
-
-  Future<void> _sendLeaveNotificationDirectly() async {
-    // Direct implementation of leave notification without background service
-    if (!widget.isHost && widget.hostIp.isNotEmpty) {
-      try {
-        UDP sender = await UDP.bind(Endpoint.any());
-        await sender.send(
-          Uint8List.fromList("LEAVE".codeUnits),
-          Endpoint.unicast(InternetAddress(widget.hostIp), port: Port(6002)),
-        );
-        sender.close();
-        print("📤 Sent leave notification directly to host");
-      } catch (e) {
-        print("❌ Error sending leave message directly: $e");
-      }
-    }
-  }
-
-  void _handleAppBackgroundOrClosed() async {
-    if (_isDisposed) return;
-
-    // print("🚨 APP CLOSED - Starting cleanup process");
-
-    // print("🔄 App going to background or closing, cleaning up...");
-
-    // // Notify via background service
-    // // await BackgroundCleanupService.notifyUserLeft(
-    // //   widget.hostIp,
-    // //   widget.isHost,
-    // //   _myIpAddress,
-    // //   connectedUsers,
-    // // );
-
-    // await Future.delayed(Duration(milliseconds: 500));
-
-    // await _cleanupAndLeave();
-
-    // print("✅ App closed cleanup completed");
-
-    // Hanya handle background setelah delay, untuk memastikan ini bukan sekedar pindah activity
-    Future.delayed(Duration(seconds: 2), () async {
-      if (_isInBackground && !_isDisposed) {
-        // Cek jika masih di background setelah 2 detik, kemungkinan besar app di-close
-        // Tapi kita tidak langsung cleanup, tunggu sampai benar-benar detached
-        print("⏰ App masih di background, mungkin akan di-close...");
-      }
-    });
-  }
-
-  void _startUserActivityTracking() {
-    // Update last seen untuk host
-    _userLastSeen[_myIpAddress] = DateTime.now();
-
-    // Start timer untuk periodic check
-    _userCleanupTimer = Timer.periodic(Duration(seconds: 10), (timer) {
-      if (_isDisposed) {
-        timer.cancel();
-        return;
-      }
-
-      _checkInactiveUsers();
-    });
-  }
-
-  void _checkInactiveUsers() {
-    final now = DateTime.now();
-    List<String> usersToRemove = [];
-
-    _userLastSeen.forEach((ip, lastSeen) {
-      if (now.difference(lastSeen) > Duration(seconds: 30)) {
-        // User tidak aktif selama 30 detik, remove
-        print("⏰ User $ip inactive for 30 seconds, removing...");
-        usersToRemove.add(ip);
-      }
-    });
-
-    for (String ip in usersToRemove) {
-      _removeUser(ip);
-      _userLastSeen.remove(ip);
-    }
-  }
-
-  // Update last seen setiap ada activity dari user
-  void _updateUserLastSeen(String ip) {
-    _userLastSeen[ip] = DateTime.now();
-  }
-
-  // Panggil method ini setiap menerima pesan dari user
-  void _handleUserActivity(String userIp) {
-    _updateUserLastSeen(userIp);
   }
 
   Future<void> _notifyUserLeft() async {
@@ -434,15 +238,11 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     // Add the host itself to the list
     String hostIp = widget.hostIp;
     _addUser(hostIp);
-    // _startUserActivityTracking(); // Start tracking
 
     udpSocket?.asStream().listen((datagram) async {
       if (datagram != null) {
         String message = String.fromCharCodes(datagram.data);
         String userIp = datagram.address.address;
-
-        // Update user activity untuk SEMUA pesan yang diterima
-        _handleUserActivity(userIp);
 
         if (message == "MotoVox_DISCOVER") {
           log(
@@ -474,7 +274,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         } else if (message == "LEAVE") {
           log("🚪 [HOST] Leave request received from: $userIp");
           _removeUser(userIp);
-          _userLastSeen.remove(userIp);
           _broadcastUserList();
         } else if (message == "PING") {
           // Respond to ping from clients
@@ -545,7 +344,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
-  // Add keep-alive mechanism
+  // keep-alive mechanism
   void _startKeepAliveBroadcast() {
     _keepAliveTimer = Timer.periodic(Duration(seconds: 5), (timer) async {
       if (_isDisposed) {
@@ -631,13 +430,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
   Future<void> _initAudio() async {
     await _audioPlayer?.openPlayer().then((value) async {
-      // setState(() {
-      //   _mPlayerIsInited = true;
-      // });
       await _openRecorder();
     });
-    // await _audioRecorder!.openRecorder();
-    // await _audioPlayer!.openPlayer();
     await _startPlayerForStream(); // Initial setup
   }
 
@@ -647,19 +441,10 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       throw RecordingPermissionException('Microphone permission not granted');
     }
     await _audioRecorder!.openRecorder();
-    // _recorderSubscription = _audioRecorder!.onProgress!.listen((e) {
-    //   // pos = e.duration.inMilliseconds; // We do not need this information in this example.
-    //   setState(() {
-    //     _dbLevel = e.decibels as double;
-    //   });
-    // });
+
     await _audioRecorder!.setSubscriptionDuration(
       const Duration(milliseconds: 100),
     ); // DO NOT FORGET THIS CALL !!!
-
-    // setState(() {
-    //   _mRecorderIsInited = true;
-    // });
   }
 
   void _listenForVideoStream() async {
@@ -850,9 +635,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       log('sendvideo _listAllVideos videoDir: $videoDir');
       if (!await videoDir.exists()) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-            ..removeCurrentSnackBar()
-            ..showSnackBar(SnackBar(content: Text('No videos found')));
+          _showInfoSnackbar('No videos found');
         }
         return;
       }
@@ -871,9 +654,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
         if (videoFiles.isEmpty) {
           if (mounted) {
-            ScaffoldMessenger.of(context)
-              ..removeCurrentSnackBar()
-              ..showSnackBar(SnackBar(content: Text('No videos found')));
+            _showInfoSnackbar('No videos found');
           }
           return;
         }
@@ -954,7 +735,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                         builder: (context) =>
                             VideoPathDialog(videoPath: videoFiles[index].path),
                       );
-                      // _playVideo(File(videoFiles[index].path));
                     },
                     trailing: IconButton(
                       icon: Icon(Icons.delete, color: Colors.red),
@@ -986,26 +766,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     try {
       await videoFile.delete();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('Video deleted'),
-              backgroundColor: Colors.green,
-            ),
-          );
+        _showSuccessSnackbar('Video deleted');
       }
     } catch (e) {
       log("❌ Error deleting video: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('Failed to delete video'),
-              backgroundColor: Colors.red,
-            ),
-          );
+        _showErrorSnackbar('Failed to delete video');
       }
     }
   }
@@ -1449,9 +1215,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
           _tcpClients.add(client);
           _handleIncomingFiles(client, clientIp);
 
-          // Setup handlers
-          // _setupTcpConnectionHandlers(client, clientIp);
-
           client.done.then((_) {
             log("📁 [HOST] TCP client disconnected: $clientIp");
             _tcpClients.remove(client);
@@ -1730,17 +1493,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       log("📊 Transfer completed: $resultMessage");
 
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text(resultMessage),
-              backgroundColor: successfulSends > 0
-                  ? Colors.green
-                  : Colors.orange,
-              duration: Duration(seconds: 4),
-            ),
-          );
+        successfulSends > 0
+            ? _showSuccessSnackbar(resultMessage)
+            : _showErrorSnackbar(resultMessage);
       }
 
       // If all failed and we're not host, try to reconnect
@@ -1752,15 +1507,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       log("❌ Critical error in video transfer: $e");
 
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('Failed to send video: ${e.toString()}'),
-              backgroundColor: Colors.red,
-              duration: Duration(seconds: 5),
-            ),
-          );
+        _showErrorSnackbar('Failed to send video: ${e.toString()}');
       }
     } finally {
       progressTimer?.cancel();
@@ -1907,16 +1654,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       // Show success notification
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text(
-                'Video received: ${fileName.split('_from_').first}',
-              ),
-              backgroundColor: Colors.green,
-            ),
-          );
+        _showSuccessSnackbar(
+          'Video received: ${fileName.split('_from_').first}',
+        );
       }
 
       log("sendvideo _saveReceivedFile 💾 File saved: $filePath");
@@ -1961,14 +1701,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     } catch (e) {
       log("❌ Error saving received file: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('Error saving received video'),
-              backgroundColor: Colors.red,
-            ),
-          );
+        _showErrorSnackbar('Error saving received video');
       }
     }
   }
@@ -1989,43 +1722,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   Future<String> _getAppDirectory() async {
     final directory = Directory.systemTemp;
     return directory.path;
-  }
-
-  Future<void> _retryTcpInitialization() async {
-    log("🔄 Retrying TCP initialization...");
-
-    try {
-      // Cleanup existing connections terlebih dahulu
-      await _cleanupTcpResources();
-
-      await Future.delayed(Duration(seconds: 1));
-      try {
-        // Delay sedikit untuk memastikan resources sudah siap
-        await Future.delayed(Duration(milliseconds: 500));
-
-        if (widget.isHost) {
-          await _startTcpServer();
-          // Tunggu sebentar untuk server benar-benar ready
-          await Future.delayed(Duration(milliseconds: 200));
-        } else {
-          _connectToTcpServer();
-        }
-
-        _isTcpInitialized = true;
-        _tcpInitializationCompleter!.complete();
-
-        log("✅ TCP connections initialized successfully");
-      } catch (e) {
-        log("❌ TCP initialization failed: $e");
-
-        // Retry setelah delay
-        await Future.delayed(Duration(seconds: 2));
-        await _retryTcpInitialization();
-      }
-    } catch (e) {
-      log("❌ TCP retry failed: $e");
-      _tcpInitializationCompleter?.completeError(e);
-    }
   }
 
   Future<void> _cleanupTcpResources() async {
@@ -2066,21 +1762,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _tcpClients.clear();
 
     _isTcpInitialized = false;
-  }
-
-  void _debugTcpConnections() {
-    log("🔍 TCP Connections Debug:");
-    log("   - isHost: ${widget.isHost}");
-    log("   - isTcpInitialized: $_isTcpInitialized");
-    log("   - Total TCP connections: ${_tcpConnections.length}");
-    log("   - Connected users: ${connectedUsers.length}");
-
-    _tcpConnections.forEach((ip, socket) {
-      log("   - $ip: ${socket.remoteAddress}:${socket.remotePort}");
-    });
-
-    log("   - My IP: $_myIpAddress");
-    log("   - Host IP: ${widget.hostIp}");
   }
 
   @override
@@ -2592,22 +2273,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                       },
                                       color: Colors.red,
                                     ),
-                                    // SizedBox(width: 16),
-
-                                    // _buildControlButton(
-                                    //   icon: Icons.video_call_outlined,
-                                    //   label: "Video Call",
-                                    //   onPressed: () {
-                                    //     Navigator.of(context).push(
-                                    //       MaterialPageRoute(
-                                    //         builder: (context) {
-                                    //           return VideoCallHomePage();
-                                    //         },
-                                    //       ),
-                                    //     );
-                                    //   },
-                                    //   color: Colors.red,
-                                    // ),
                                   ],
                                 ),
                               ],
@@ -2657,16 +2322,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                               _startVoiceRecording();
                                             } else {
                                               log("Permission is denied");
-                                              ScaffoldMessenger.of(context)
-                                                ..removeCurrentSnackBar()
-                                                ..showSnackBar(
-                                                  SnackBar(
-                                                    content: Text(
-                                                      'Microphone permission required',
-                                                    ),
-                                                    backgroundColor: Colors.red,
-                                                  ),
-                                                );
+                                              _showErrorSnackbar(
+                                                'Microphone permission required',
+                                              );
                                             }
                                           }
                                         }
@@ -2696,16 +2354,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                                               _startVoiceStreaming();
                                             } else {
                                               log("Permission is denied");
-                                              ScaffoldMessenger.of(context)
-                                                ..removeCurrentSnackBar()
-                                                ..showSnackBar(
-                                                  SnackBar(
-                                                    content: Text(
-                                                      'Microphone permission required',
-                                                    ),
-                                                    backgroundColor: Colors.red,
-                                                  ),
-                                                );
+                                              _showErrorSnackbar(
+                                                'Microphone permission required',
+                                              );
                                             }
                                           }
                                         }
@@ -2787,12 +2438,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
 
-    // BackgroundCleanupService.notifyUserLeft(
-    //   widget.hostIp,
-    //   widget.isHost,
-    //   _myIpAddress,
-    //   connectedUsers,
-    // );
     // Cleanup TCP connections
     log("🧹 Starting disposal process...");
 
@@ -2802,10 +2447,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       // 2. Tunggu untuk memastikan semua socket closed
       await Future.delayed(Duration(milliseconds: 500));
-
-      // 3. Lakukan cleanup lainnya
-
-      _sendLeaveNotificationDirectly();
 
       await _cleanupAndLeave();
     } catch (e) {
@@ -2860,8 +2501,6 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     // Cleanup audio resources first
     try {
       _silenceTimer?.cancel();
-      // _userCleanupTimer?.cancel();
-      // await _stopPlayerForStream();
       await _audioRecorder?.stopRecorder();
       await _audioPlayer?.stopPlayer();
       await _audioRecorder?.closeRecorder();
@@ -3074,16 +2713,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       await _saveVoiceRecordingMetadata();
 
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text(
-                'Voice message received from ${senderIp == _myIpAddress ? 'You' : senderIp}',
-              ),
-              backgroundColor: Colors.green,
-            ),
-          );
+        _showSuccessSnackbar(
+          'Voice message received from ${senderIp == _myIpAddress ? 'You' : senderIp}',
+        );
       }
 
       log("🎵 Voice recording saved: $filePath");
@@ -3120,11 +2752,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     try {
       if (_voiceRecordings.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-            ..removeCurrentSnackBar()
-            ..showSnackBar(
-              SnackBar(content: Text('No voice recordings found')),
-            );
+          _showInfoSnackbar('No voice recordings found');
         }
         return;
       }
@@ -3155,27 +2783,12 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       if (mounted) {
         Navigator.of(context, rootNavigator: true).maybePop();
-
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('Voice recording deleted'),
-              backgroundColor: Colors.green,
-            ),
-          );
+        _showSuccessSnackbar('Voice recording deleted');
       }
     } catch (e) {
       log("❌ Error deleting voice recording: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..removeCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text('Failed to delete voice recording'),
-              backgroundColor: Colors.red,
-            ),
-          );
+        _showErrorSnackbar('Failed to delete voice recording');
       }
     }
   }
@@ -3282,6 +2895,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     );
   }
 
+  // Hide file transfer progress dialog
+  void _hideFileTransferProgressDialog() {
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
   void _showInfoSnackbar(String message) {
     if (mounted) {
       ScaffoldMessenger.of(context)
@@ -3292,10 +2912,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     }
   }
 
-  // Hide file transfer progress dialog
-  void _hideFileTransferProgressDialog() {
+  void _showSuccessSnackbar(String message) {
     if (mounted) {
-      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context)
+        ..removeCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.green),
+        );
     }
   }
 

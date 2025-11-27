@@ -1,7 +1,6 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:push_to_talk_app/core/utils/snack_msg.dart';
 import 'package:push_to_talk_app/core/services/signaling.dart';
@@ -264,34 +263,6 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
           spacing: 15,
           runSpacing: 15,
           children: [
-            if (roomIdController.text.length > 2) ...[
-              //               FloatingActionButton(
-              //                 tooltip: 'Share room link',
-              //                 backgroundColor: Colors.blueAccent,
-              //                 child: const Icon(Icons.share),
-              //                 onPressed: () async {
-              //                   final roomUrl =
-              //                       'https://0.0.0.0:8080?roomId=${roomIdController.text}';
-
-              //                   final shareText =
-              //                       '''
-              // Join my WebRTC room
-
-              // Room ID: ${roomIdController.text}
-              // Link: $roomUrl
-              // ''';
-
-              //                   await Clipboard.setData(ClipboardData(text: shareText));
-
-              //                   if (mounted) {
-              //                     SnackMsg.showInfo(
-              //                       context,
-              //                       'Room link copied to clipboard!',
-              //                     );
-              //                   }
-              //                 },
-              //               ),
-            ],
             if (localRenderOk) ...[
               if (signaling.isJoined() &&
                   cameraCountSnap.hasData &&
@@ -346,59 +317,7 @@ class _WalkieTalkieVideoCallState extends State<WalkieTalkieVideoCall> {
                   ),
                 ),
               ],
-              // if (localRenderOk && signaling.isJoined()) ...[
-              //   // FloatingActionButton(
-              //   //   tooltip: signaling.isScreenSharing()
-              //   //       ? 'Change screen sharing'
-              //   //       : 'Start screen sharing',
-              //   //   backgroundColor: signaling.isScreenSharing()
-              //   //       ? Colors.amber
-              //   //       : Colors.grey,
-              //   //   child: const Icon(Icons.screen_share_outlined),
-              //   //   onPressed: () async =>
-              //   //       await doTry(runAsync: () => signaling.screenSharing()),
-              //   // ),
-              //   // if (signaling.isScreenSharing()) ...[
-              //   //   FloatingActionButton(
-              //   //     tooltip: 'Stop screen sharing',
-              //   //     backgroundColor: Colors.redAccent,
-              //   //     child: const Icon(Icons.stop_screen_share_outlined),
-              //   //     onPressed: () => signaling.stopScreenSharing(),
-              //   //   ),
-              //   // ],
-              //   // FloatingActionButton(
-              //   //   tooltip: 'Hangup',
-              //   //   backgroundColor: Colors.red,
-              //   //   child: const Icon(Icons.call_end),
-              //   //   onPressed: () {
-              //   //     Navigator.pop(context);
-              //   //     hangUp(false);
-              //   //   },
-              //   // ),
-              //   FloatingActionButton(
-              //     tooltip: 'Hangup',
-              //     backgroundColor: Colors.red,
-              //     child: const Icon(Icons.call_end),
-              //     onPressed: () async {
-              //       await hangUp(false); // cleanup WebRTC
-              //       if (mounted) Navigator.pop(context); // safely go back
-              //     },
-              //   ),
-              // ] else ...[
-              //   FloatingActionButton(
-              //     tooltip: 'Start call',
-              //     backgroundColor: Colors.green,
-              //     child: const Icon(Icons.call),
-              //     onPressed: () async => await doTry(
-              //       runAsync: () => join(),
-              //       onError: () {
-              //         Navigator.pop(context);
 
-              //         hangUp(false);
-              //       },
-              //     ),
-              //   ),
-              // ],
               if (localRenderOk) ...[
                 // Tampilkan tombol Start Call hanya untuk callee (bukan initiator)
                 if (!_isInitiator && !signaling.isJoined()) ...[
