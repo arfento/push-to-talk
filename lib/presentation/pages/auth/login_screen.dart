@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:push_to_talk_app/core/constants/constants.dart';
-import 'package:push_to_talk_app/presentation/components/auth_form.dart';
+import 'package:push_to_talk_app/presentation/pages/record_audio_firebase/auth_form.dart';
 import 'package:push_to_talk_app/presentation/pages/home/walkie_talkie_screen.dart';
 
 class LoginScreen extends StatefulWidget {

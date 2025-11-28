@@ -1399,7 +1399,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
     Timer? progressTimer;
     int totalBytes = 0;
-    int bytesSent = 0;
+    int totalBytesSent = 0;
     int successfulSends = 0;
     List<String> failedIps = [];
 
@@ -1417,21 +1417,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       // Prepare file metadata
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String originalFileName = 'video_${timestamp}.mp4';
-      final String senderFileName = 'sent_video_${timestamp}.mp4'; // For sender
       final String receiverFileName =
           'video_${timestamp}_from_${_myIpAddress.replaceAll('.', '_')}.mp4'; // For receivers
-
-      // Start progress updates
-      progressTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
-        if (bytesSent >= totalBytes) {
-          timer.cancel();
-          _progressController?.add(1.0);
-        } else {
-          double progress = bytesSent / totalBytes;
-          _progressController?.add(progress);
-        }
-      });
 
       // Create file header with receiver-specific filename
       Uint8List fileNameBytes = Uint8List.fromList(receiverFileName.codeUnits);
@@ -1441,8 +1428,22 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       headerData.setUint32(4, fileNameBytes.length, Endian.big);
       header.setRange(8, 8 + fileNameBytes.length, fileNameBytes);
 
+      // Calculate total data to send (header + video data)
+      int totalDataToSend = header.length + videoData.length;
+
+      // // Start progress updates
+      // progressTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+      //   double progress = totalBytesSent / totalDataToSend;
+      //   _progressController?.add(progress);
+
+      //   if (progress >= 1.0) {
+      //     timer.cancel();
+      //   }
+      // });
+
       // Send to all connected clients
       final List<Socket> clientsToSend = _getValidTcpClients();
+      final int totalClients = clientsToSend.length;
 
       if (clientsToSend.isEmpty) {
         throw Exception("No valid TCP connections available");
@@ -1450,28 +1451,38 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
       log("📤 Sending video to ${clientsToSend.length} client(s)");
 
+      int completedClients = 0;
+
+      progressTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+        double progress = completedClients / totalClients;
+        _progressController?.add(progress);
+
+        if (progress >= 1.0) {
+          timer.cancel();
+        }
+      });
+
       // Send to each client with individual error handling
       for (Socket client in clientsToSend) {
         final clientIp = client.remoteAddress.address;
 
         try {
-          // Verify connection is still alive
-          client.remoteAddress;
-
-          // Send header and file data
+          // Kirim sekaligus
           client.add(header);
           client.add(videoData);
           await client.flush();
 
-          bytesSent = totalBytes; // Mark as complete for progress
-          successfulSends++;
+          completedClients++;
 
+          // Update progress
+          double progress = completedClients / totalClients;
+          _progressController?.add(progress);
+
+          successfulSends++;
           log("✅ Video successfully sent to $clientIp");
         } catch (e) {
           log("❌ Failed to send to $clientIp: $e");
           failedIps.add(clientIp);
-
-          // Remove broken connection
           _tcpClients.remove(client);
           try {
             client.destroy();
@@ -1481,8 +1492,9 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         }
       }
 
-      //  Handle results
-      await Future.delayed(Duration(milliseconds: 500)); // Show completion
+      // Ensure progress shows 100% at completion
+      _progressController?.add(1.0);
+      await Future.delayed(Duration(milliseconds: 500));
 
       final String resultMessage = _buildTransferResultMessage(
         successfulSends,
@@ -1505,6 +1517,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
       }
     } catch (e) {
       log("❌ Critical error in video transfer: $e");
+      _progressController?.add(0.0); // Reset progress on error
 
       if (mounted) {
         _showErrorSnackbar('Failed to send video: ${e.toString()}');
@@ -2809,11 +2822,13 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
             builder: (context, snapshot) {
               double progress = snapshot.data ?? _fileTransferProgress;
               int percentage = (progress * 100).toInt();
+              int totalClients = _getValidTcpClients().length;
+              int completedClients = (progress * totalClients).round();
 
               return AlertDialog(
                 title: Row(
                   children: [
-                    CircularProgressIndicator(),
+                    CircularProgressIndicator(value: progress),
                     SizedBox(width: 16),
                     Expanded(
                       child: Text(
@@ -2855,7 +2870,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                           ),
                         ),
                         Text(
-                          '${_getValidTcpClients().length} client(s)',
+                          '$completedClients/$totalClients clients',
                           style: TextStyle(
                             fontSize: 10,
                             color: Colors.grey[500],
@@ -2866,7 +2881,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                     SizedBox(height: 4),
                     if (progress < 1.0)
                       Text(
-                        'Sending...',
+                        'Sending to clients...',
                         style: TextStyle(fontSize: 10, color: Colors.blue),
                       ),
                     if (progress >= 1.0)
@@ -2881,6 +2896,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                     TextButton(
                       onPressed: () {
                         _isSendingFile = false;
+                        _progressController?.add(0.0);
                         Navigator.pop(context);
                         _showInfoSnackbar('Video transfer cancelled');
                       },

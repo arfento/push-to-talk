@@ -7,7 +7,7 @@ import 'package:push_to_talk_app/core/constants/constants.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/radio_streaming/pcm_streaming_screen.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/radio_streaming/radio_streaming_screen.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/record_screen/audio_record_screen.dart';
-import 'package:push_to_talk_app/presentation/pages/cubit/record_cubit.dart';
+import 'package:push_to_talk_app/presentation/cubit/record_cubit.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/recordings_list/cubit/files_cubit.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/recordings_list/recordings_list_screen.dart';
 import 'package:push_to_talk_app/presentation/pages/auth/login_screen.dart';

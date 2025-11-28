@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:push_to_talk_app/core/constants/constants.dart';
-import 'package:push_to_talk_app/presentation/components/recording_row.dart';
+import 'package:push_to_talk_app/presentation/pages/record_audio_firebase/recording_row.dart';
 
 class RecordingsStream extends StatefulWidget {
   @override

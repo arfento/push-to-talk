@@ -1,8 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:push_to_talk_app/core/constants/constants.dart';
-import 'package:push_to_talk_app/presentation/components/microphone.dart';
-import 'package:push_to_talk_app/presentation/components/recording_stream.dart';
+import 'package:push_to_talk_app/presentation/pages/record_audio_firebase/microphone.dart';
+import 'package:push_to_talk_app/presentation/pages/record_audio_firebase/recording_stream.dart';
 import 'package:push_to_talk_app/presentation/welcome_screen.dart';
 
 class WalkieTalkieScreen extends StatefulWidget {

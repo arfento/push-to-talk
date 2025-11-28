@@ -5,7 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:push_to_talk_app/core/constants/color_constant.dart';
 import 'package:push_to_talk_app/presentation/widgets/concave_decoration.dart';
 import 'package:push_to_talk_app/core/constants/recorder_constants.dart';
-import 'package:push_to_talk_app/presentation/pages/cubit/record_cubit.dart';
+import 'package:push_to_talk_app/presentation/cubit/record_cubit.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/recordings_list/cubit/files_cubit.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/screens/recordings_list/recordings_list_screen.dart';
 
