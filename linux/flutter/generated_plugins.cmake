@@ -3,9 +3,8 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
-  audioplayers_linux
+  flutter_sound
   flutter_webrtc
-  record_linux
   url_launcher_linux
 )
 

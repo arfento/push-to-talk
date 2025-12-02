@@ -13,16 +13,15 @@ class BackgroundCleanupService {
     if (_isInitialized) return;
 
     final service = FlutterBackgroundService();
-
     await service.configure(
       iosConfiguration: IosConfiguration(
-        autoStart: false, // Don't auto-start on iOS
+        autoStart: false,
         onForeground: onStart,
       ),
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
         autoStart: false,
-        isForegroundMode: true, // Changed to true
+        isForegroundMode: false,
         notificationChannelId: 'walkie_cleanup_channel',
         initialNotificationTitle: 'Walkie-Talkie Cleanup',
         initialNotificationContent: 'Monitoring connections',
@@ -85,35 +84,31 @@ class BackgroundCleanupService {
   static Future<void> onStart(ServiceInstance service) async {
     print("🔄 [BACKGROUND] Background service started");
 
-    // Listen for stop command
-    service.on("stopService").listen((event) async {
-      print("🛑 [BACKGROUND] Received stop command");
-      await service.stopSelf();
-    });
-
-    // If you're using foreground mode on Android
     if (service is AndroidServiceInstance) {
+      // DELAY ↓↓↓ WAJIB
+      await Future.delayed(const Duration(milliseconds: 600));
+
       service.setForegroundNotificationInfo(
         title: "Walkie-Talkie Cleanup",
         content: "Monitoring connections",
       );
     }
 
-    service.on('userLeft').listen((event) async {
-      print("🔄 [BACKGROUND] Processing userLeft event");
+    service.on("stopService").listen((event) async {
+      await service.stopSelf();
+    });
 
-      final hostIp = event?['hostIp'] as String?;
-      final isHost = event?['isHost'] as bool? ?? false;
-      final myIp = event?['myIp'] as String?;
+    service.on('userLeft').listen((event) async {
+      final hostIp = event?['hostIp'];
+      final isHost = event?['isHost'] ?? false;
+      final myIp = event?['myIp'];
       final connectedUsers = List<String>.from(event?['connectedUsers'] ?? []);
 
       if (hostIp != null && myIp != null) {
         await _sendLeaveNotification(hostIp, isHost, myIp, connectedUsers);
       }
 
-      // Stop service setelah selesai
       await service.stopSelf();
-      print("🛑 [BACKGROUND] Background service stopped");
     });
   }
 
@@ -180,7 +175,7 @@ class BackgroundCleanupService {
       await flutterLocalNotificationsPlugin.initialize(
         const InitializationSettings(
           iOS: DarwinInitializationSettings(),
-          android: AndroidInitializationSettings('ic_bg_service_small'),
+          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         ),
       );
     }

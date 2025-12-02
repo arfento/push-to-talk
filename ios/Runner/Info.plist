@@ -47,6 +47,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>We need access to your microphone to enable push-to-talk.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>We need access to your Camera Usage!</string>
 
 </dict>
 </plist>

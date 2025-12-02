@@ -1,9 +1,7 @@
 import 'package:animated_text_kit/animated_text_kit.dart';
 import 'package:flutter/material.dart';
 import 'package:push_to_talk_app/core/constants/constants.dart';
-import 'package:push_to_talk_app/presentation/pages/audio_record/screens/radio_streaming/pcm_streaming_screen.dart';
 import 'package:push_to_talk_app/presentation/pages/lobby/create_lobby_screen.dart';
-import 'package:push_to_talk_app/presentation/welcome_screen.dart';
 
 class PTTScreen extends StatefulWidget {
   static const String id = 'ptt_screen';
@@ -92,18 +90,6 @@ class _PTTScreenState extends State<PTTScreen>
                 children: <Widget>[
                   SizedBox(height: 30),
                   // buildAnimatedWelcomeText(),
-                  SizedBox(height: 20),
-                  ElevatedButton(
-                    child: Text('PTT Firebase', style: kTextStyleFormButton),
-                    style: ElevatedButton.styleFrom(
-                      padding: kPaddingFormButton,
-                      backgroundColor: kColourPrimary,
-                    ),
-                    onPressed: () {
-                      Navigator.pushNamed(context, WelcomeScreen.id);
-                    },
-                  ),
-                  SizedBox(height: 16),
                   ElevatedButton(
                     child: Text(
                       'PTT Local Network',
@@ -118,21 +104,6 @@ class _PTTScreenState extends State<PTTScreen>
                     },
                   ),
                   SizedBox(height: 16),
-                  ElevatedButton(
-                    child: Text('Record Audio', style: kTextStyleFormButton),
-                    style: ElevatedButton.styleFrom(
-                      padding: kPaddingFormButton,
-                      backgroundColor: kColourPrimary,
-                    ),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => PCMStreamingScreen(),
-                        ),
-                      );
-                    },
-                  ),
                 ],
               ),
             ],

@@ -558,10 +558,14 @@ class Signaling {
 
   Future<void> openUserMedia() async {
     _localStream = await navigator.mediaDevices.getUserMedia({
-      'audio': true,
-      'video': {
-        'facingMode': 'user', // front camera
+      'audio': {
+        'echoCancellation': true,
+        'autoGainControl': true,
+        'noiseSuppression': true,
+        'typingNoiseDetection': true,
+        'highpassFilter': true,
       },
+      'video': {'facingMode': 'user'},
     });
 
     if ((_localStream?.getVideoTracks().length ?? 0) == 0) {

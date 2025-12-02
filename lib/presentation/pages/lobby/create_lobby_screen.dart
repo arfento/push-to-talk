@@ -226,7 +226,7 @@ class _CreateLobbyScreenState extends State<CreateLobbyScreen> {
       );
 
       if (mounted) {
-        Navigator.pushReplacement(
+        Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) =>
@@ -276,7 +276,7 @@ class _CreateLobbyScreenState extends State<CreateLobbyScreen> {
         Navigator.pop(context); // Close loading dialog
 
         if (hostAddress != null) {
-          Navigator.pushReplacement(
+          Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => LobbyScreen(

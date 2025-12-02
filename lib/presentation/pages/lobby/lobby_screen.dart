@@ -194,7 +194,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     } else if (widget.isHost) {
       // Host notify semua client
       try {
-        for (String ip in connectedUsers) {
+        for (final ip in List<String>.from(connectedUsers)) {
           if (ip != _myIpAddress) {
             UDP sender = await UDP.bind(Endpoint.any());
             await sender.send(
@@ -334,7 +334,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
     log("📢 [HOST] Sending updated user list: $userList");
 
-    for (String ip in connectedUsers) {
+    for (final ip in List<String>.from(connectedUsers)) {
       UDP sender = await UDP.bind(Endpoint.any());
       await sender.send(
         data,
@@ -352,7 +352,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
         return;
       }
 
-      for (String ip in connectedUsers) {
+      for (final ip in List<String>.from(connectedUsers)) {
         if (ip != _myIpAddress) {
           try {
             UDP sender = await UDP.bind(Endpoint.any());
@@ -830,7 +830,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
 
     // Send stop signal
     Uint8List stopSignal = Uint8List.fromList([0xFF, 0xFF, 0xFF, 0xFF]);
-    for (String ip in connectedUsers) {
+    for (final ip in List<String>.from(connectedUsers)) {
       if (ip != _myIpAddress) {
         UDP sender = await UDP.bind(Endpoint.any());
         await sender.send(
@@ -1008,7 +1008,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   void _sendVoiceRecordData(Uint8List audioData) async {
-    for (String ip in connectedUsers) {
+    for (final ip in List<String>.from(connectedUsers)) {
       if (ip != _myIpAddress) {
         // Skip your own IP
         UDP sender = await UDP.bind(Endpoint.any());
@@ -1062,7 +1062,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     log("📢 Sending message: $message");
 
     // Ensure message is sent to all users, including the host
-    for (String ip in connectedUsers) {
+    for (final ip in List<String>.from(connectedUsers)) {
       UDP sender = await UDP.bind(Endpoint.any());
       await sender.send(
         data,
@@ -1800,10 +1800,8 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
                     ),
                     TextButton(
                       onPressed: () async {
-                        // Kirim notifikasi dan cleanup
-                        await _notifyUserLeft();
-                        await _cleanupAndLeave();
-                        if (context.mounted) Navigator.of(context).pop(true);
+                        await _notifyUserLeft(); // Only notify
+                        Navigator.of(context).pop(true);
                       },
                       child: const Text("Exit"),
                     ),
@@ -1813,14 +1811,15 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
               false;
 
           if (shouldExit && context.mounted) {
-            Navigator.of(context).pop(result);
+            Navigator.of(context).pop(); // Dispose → triggers dispose()
           }
         } else {
-          // Untuk client, cukup cleanup dan pop
-          await _cleanupAndLeave();
-          if (context.mounted) Navigator.of(context).pop(result);
+          // client exit
+          await _notifyUserLeft(); // Only notify
+          if (context.mounted) Navigator.of(context).pop();
         }
       },
+
       child: SafeArea(
         child: Scaffold(
           extendBodyBehindAppBar: true,
@@ -2447,29 +2446,41 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
   }
 
   @override
-  Future<void> dispose() async {
+  void dispose() {
+    // Mark as disposed to prevent any further operations
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
 
-    // Cleanup TCP connections
-    log("🧹 Starting disposal process...");
+    // Perform async cleanup but don't await it in dispose()
+    _asyncDispose();
 
+    // ALWAYS call super.dispose() synchronously
+    super.dispose();
+
+    log("✅ Synchronous disposal completed");
+  }
+
+  Future<void> _asyncDispose() async {
     try {
-      // 1. Cleanup TCP resources terlebih dahulu
+      log("🧹 Starting async disposal process...");
+
+      // 1. Cleanup TCP resources
       await _cleanupTcpResources();
 
-      // 2. Tunggu untuk memastikan semua socket closed
+      // 2. Wait to ensure all sockets are closed
       await Future.delayed(Duration(milliseconds: 500));
 
       await _cleanupAndLeave();
-    } catch (e) {
-      log("❌ Error during disposal: $e");
-    } finally {
+
+      // Host cleanup
       if (widget.isHost) {
         networkService.removeLobby(widget.lobbyId);
       }
-      super.dispose();
-      log("✅ Disposal completed");
+
+      log("✅ Async disposal completed");
+    } catch (e) {
+      log("❌ Error during async disposal: $e");
+      // Don't rethrow as dispose() is already called
     }
   }
 
@@ -2495,7 +2506,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     } else if (widget.isHost) {
       // Host should notify all clients that they're leaving
       try {
-        for (String ip in connectedUsers) {
+        for (final ip in List<String>.from(connectedUsers)) {
           if (ip != _myIpAddress) {
             UDP sender = await UDP.bind(Endpoint.any());
             await sender.send(
@@ -2529,7 +2540,7 @@ class _LobbyScreenState extends State<LobbyScreen> with WidgetsBindingObserver {
     // Stop recording if active
     if (_isRecording) {
       await _audioRecorder!.stopRecorder();
-      setState(() => _isRecording = false);
+      if (mounted) setState(() => _isRecording = false);
     }
 
     // Cleanup other resources

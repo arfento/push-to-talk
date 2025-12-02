@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:push_to_talk_app/core/helpers/paths.dart';
-import 'package:push_to_talk_app/presentation/pages/audio_record/controller/audio_player_controller.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/models/recording.dart';
 import 'package:push_to_talk_app/presentation/pages/audio_record/models/recording_group.dart';
 part 'files_state.dart';
@@ -25,16 +24,14 @@ class FilesCubit extends Cubit<FilesState> {
 
       for (final file in files) {
         if (file is File) {
-          AudioPlayerController controller = AudioPlayerController();
-
           // Get duration safely
-          Duration? fileDuration = await controller.setPath(
-            filePath: file.path,
-          );
+          // Duration? fileDuration = await controller.setPath(
+          //   filePath: file.path,
+          // );
 
-          if (fileDuration != null) {
-            recordings.add(Recording(file: file, fileDuration: fileDuration));
-          }
+          // if (fileDuration != null) {
+          //   recordings.add(Recording(file: file, fileDuration: fileDuration));
+          // }
         }
       }
 
